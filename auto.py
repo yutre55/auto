@@ -13,6 +13,8 @@ Features:
 import os
 import time
 import asyncio
+import http.server
+import socketserver
 
 # Fix Python 3.12+ / 3.14 event loop error when importing Pyrogram
 try:
@@ -32,6 +34,24 @@ from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, 
 from pyrogram.errors import SessionPasswordNeeded, PhoneCodeInvalid, PhoneCodeExpired
 
 load_dotenv()
+
+def run_health_server():
+    port = int(os.getenv("PORT", "8080"))
+    class HealthHandler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-type", "text/plain")
+            self.end_headers()
+            self.wfile.write(b"WordSeek Auto Bot is alive and running 24/7!")
+        def log_message(self, format, *args):
+            pass  # Suppress request log spam
+
+    try:
+        with socketserver.TCPServer(("0.0.0.0", port), HealthHandler) as httpd:
+            logger.info(f"🌐 Health check web server running on port {port}")
+            httpd.serve_forever()
+    except Exception as e:
+        logger.error(f"Failed to start health server on port {port}: {e}")
 
 # Logging setup
 logging.basicConfig(
@@ -189,6 +209,44 @@ bot = Client(
 userbot: Optional[Client] = None
 user_states: Dict[int, dict] = {}
 
+def register_word_seek_handler(client: Client):
+    @client.on_message(filters.incoming & filters.chat(["@WordSeekBot", 539373722]))
+    async def word_seek_listener(c: Client, message: Message):
+        chat_id = message.chat.id
+        chat_info = db.get_chat(chat_id)
+        if not chat_info or not chat_info.get("is_enabled"):
+            return
+
+        text = message.text or message.caption or ""
+        if not text:
+            return
+
+        text_lower = text.lower()
+        game_mode = chat_info.get("game_mode", "new4")
+        word_len = 5 if game_mode == "new5" else 4
+
+        if "guess" in text_lower or "word" in text_lower or "_" in text or "score" in text_lower:
+            word_pool = WORDS_5 if word_len == 5 else WORDS_4
+            guess_word = random.choice(word_pool)
+
+            await asyncio.sleep(random.uniform(1.2, 2.3))
+            try:
+                await c.send_message(chat_id, guess_word)
+                logger.info(f"🎮 Sent word guess '{guess_word}' to WordSeekBot in chat {chat_id}")
+            except Exception as e:
+                logger.error(f"Failed to send word guess in {chat_id}: {e}")
+
+        if "congratulations" in text_lower or "completed" in text_lower or "game over" in text_lower or "score:" in text_lower:
+            db.increment_stats(chat_id, solved_word=True, completed_game=("completed" in text_lower or "congratulations" in text_lower))
+
+            cmd = f"/{game_mode}"
+            await asyncio.sleep(2.0)
+            try:
+                await c.send_message(chat_id, cmd)
+                logger.info(f"🔄 Completed game session! Auto-started new game with '{cmd}' in chat {chat_id}")
+            except Exception as e:
+                logger.error(f"Failed to start new game in {chat_id}: {e}")
+
 async def init_userbot():
     global userbot
     acc = db.get_account()
@@ -202,48 +260,11 @@ async def init_userbot():
                 in_memory=True
             )
             await userbot.start()
+            register_word_seek_handler(userbot)
             logger.info(f"✅ Connected Userbot account: {acc['account_name']} (ID: {acc['account_id']})")
         except Exception as e:
             logger.error(f"Failed to start saved userbot: {e}")
             userbot = None
-
-# WordSeekBot Listener on Userbot
-@userbot.on_message(filters.incoming & filters.chat(["WordSeekBot", "@WordSeekBot", 539373722])) if userbot else lambda f: f
-async def word_seek_listener(client: Client, message: Message):
-    chat_id = message.chat.id
-    chat_info = db.get_chat(chat_id)
-    if not chat_info or not chat_info.get("is_enabled"):
-        return
-
-    text = message.text or message.caption or ""
-    if not text:
-        return
-
-    text_lower = text.lower()
-    game_mode = chat_info.get("game_mode", "new4")
-    word_len = 5 if game_mode == "new5" else 4
-
-    if "guess" in text_lower or "word" in text_lower or "_" in text or "score" in text_lower:
-        word_pool = WORDS_5 if word_len == 5 else WORDS_4
-        guess_word = random.choice(word_pool)
-
-        await asyncio.sleep(random.uniform(1.2, 2.3))
-        try:
-            await client.send_message(chat_id, guess_word)
-            logger.info(f"🎮 Sent word guess '{guess_word}' to WordSeekBot in chat {chat_id}")
-        except Exception as e:
-            logger.error(f"Failed to send word guess in {chat_id}: {e}")
-
-    if "congratulations" in text_lower or "completed" in text_lower or "game over" in text_lower or "score:" in text_lower:
-        db.increment_stats(chat_id, solved_word=True, completed_game=("completed" in text_lower or "congratulations" in text_lower))
-
-        cmd = f"/{game_mode}"
-        await asyncio.sleep(2.0)
-        try:
-            await client.send_message(chat_id, cmd)
-            logger.info(f"🔄 Completed game session! Auto-started new game with '{cmd}' in chat {chat_id}")
-        except Exception as e:
-            logger.error(f"Failed to start new game in {chat_id}: {e}")
 
 @bot.on_message(filters.command(["start", "help"]) & filters.private)
 async def cmd_start(client: Client, message: Message):
@@ -317,11 +338,8 @@ async def cmd_addsession(client: Client, message: Message):
             await userbot.stop()
 
         userbot = temp_client
+        register_word_seek_handler(userbot)
         logger.info(f"✅ Connected Session String account: {acc_name} (ID: {me.id})")
-
-        @userbot.on_message(filters.incoming & filters.chat(["WordSeekBot", "@WordSeekBot", 539373722]))
-        async def dynamic_listener(c, m):
-            await word_seek_listener(c, m)
 
         await status_msg.edit_text(
             f"✅ **Session String Linked Successfully!** 🎉\n\n"
@@ -399,10 +417,7 @@ async def handle_private_states(client: Client, message: Message):
                 in_memory=True
             )
             await userbot.start()
-
-            @userbot.on_message(filters.incoming & filters.chat(["WordSeekBot", "@WordSeekBot", 539373722]))
-            async def dynamic_listener(c, m):
-                await word_seek_listener(c, m)
+            register_word_seek_handler(userbot)
 
             await status_msg.edit_text(
                 f"✅ **Telegram Account Linked Successfully!** 🎉\n\n"
@@ -447,10 +462,7 @@ async def handle_private_states(client: Client, message: Message):
                 in_memory=True
             )
             await userbot.start()
-
-            @userbot.on_message(filters.incoming & filters.chat(["WordSeekBot", "@WordSeekBot", 539373722]))
-            async def dynamic_listener(c, m):
-                await word_seek_listener(c, m)
+            register_word_seek_handler(userbot)
 
             await status_msg.edit_text(
                 f"✅ **Telegram Account Linked Successfully (2FA Verified)!** 🎉\n\n"
@@ -508,6 +520,10 @@ async def cmd_stats(client: Client, message: Message):
 
 async def main():
     logger.info("Starting WordSeekBot Automation Script (auto.py)...")
+
+    # Start 24/7 health check web server in background thread for Render
+    threading.Thread(target=run_health_server, daemon=True).start()
+
     await init_userbot()
 
     if bot:
