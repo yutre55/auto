@@ -23,6 +23,14 @@ import random
 import threading
 from typing import Dict, List, Optional
 from dotenv import load_dotenv
+
+# Fix Python 3.12+ / 3.14 event loop error when importing Pyrogram
+try:
+    asyncio.get_event_loop()
+except RuntimeError:
+    _loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(_loop)
+
 from pyrogram import Client, filters, enums, idle
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from pyrogram.errors import SessionPasswordNeeded, PhoneCodeInvalid, PhoneCodeExpired
