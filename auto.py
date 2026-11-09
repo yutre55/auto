@@ -269,6 +269,22 @@ async def init_userbot():
             logger.error(f"Failed to start saved userbot: {e}")
             userbot = None
 
+def clear_telegram_webhook(token: str):
+    if not token:
+        return
+    try:
+        url = f"https://api.telegram.org/bot{token}/deleteWebhook?drop_pending_updates=true"
+        req = urllib.request.Request(url)
+        with urllib.request.urlopen(req, timeout=5) as response:
+            res = json.loads(response.read().decode())
+            logger.info(f"🗑️ Cleared Telegram webhook: {res}")
+    except Exception as e:
+        logger.warning(f"Could not clear webhook: {e}")
+
+@bot.on_message(filters.private & ~filters.bot)
+async def debug_incoming_message(client: Client, message: Message):
+    logger.info(f"📩 DEBUG: Received private message from User ID {message.from_user.id} (@{message.from_user.username}): '{message.text}'")
+
 @bot.on_message(filters.command(["start", "help"]) & filters.private)
 async def cmd_start(client: Client, message: Message):
     if OWNER_ID != 0 and message.from_user.id != OWNER_ID:
@@ -526,6 +542,7 @@ async def main():
     await init_userbot()
 
     if bot:
+        clear_telegram_webhook(BOT_TOKEN)
         await bot.start()
         logger.info("WordSeek Controller Bot connected successfully!")
 
