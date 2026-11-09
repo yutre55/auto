@@ -15,14 +15,8 @@ import time
 import asyncio
 import http.server
 import socketserver
-
-# Fix Python 3.12+ / 3.14 event loop error when importing Pyrogram
-try:
-    asyncio.get_event_loop()
-except RuntimeError:
-    _loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(_loop)
-
+import urllib.request
+import json
 import sqlite3
 import logging
 import random
