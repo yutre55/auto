@@ -67,8 +67,8 @@ logger = logging.getLogger("WordSeekAutoBot")
 
 API_ID = int(os.getenv("API_ID", "24967812"))
 API_HASH = os.getenv("API_HASH", "1319741088339b33a579bb8cb2e9c8ec")
-BOT_TOKEN = os.getenv("BOT_TOKEN", "")
-OWNER_ID = int(os.getenv("OWNER_ID", "0"))
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8641208496:AAEWdBZg6gP7g8i5QP_1GKZR-_BPunzmWpW")
+OWNER_ID = int(os.getenv("OWNER_ID", "5193216992"))
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "auto_wordbot.db")
 
