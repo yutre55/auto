@@ -550,10 +550,17 @@ async def main():
 
     await idle()
 
-    if userbot and userbot.is_connected:
-        await userbot.stop()
-    if bot and bot.is_connected:
-        await bot.stop()
+    try:
+        if userbot and userbot.is_connected:
+            await userbot.stop()
+    except Exception:
+        pass
+
+    try:
+        if bot and bot.is_connected:
+            await bot.stop()
+    except Exception:
+        pass
 
 if __name__ == "__main__":
     asyncio.run(main())
