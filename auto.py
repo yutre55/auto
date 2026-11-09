@@ -36,7 +36,7 @@ from pyrogram.errors import SessionPasswordNeeded, PhoneCodeInvalid, PhoneCodeEx
 load_dotenv()
 
 def run_health_server():
-    port = int(os.getenv("PORT", "8080"))
+    port = int(os.getenv("PORT", "10000"))
     class HealthHandler(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
             self.send_response(200)
@@ -48,10 +48,13 @@ def run_health_server():
 
     try:
         with socketserver.TCPServer(("0.0.0.0", port), HealthHandler) as httpd:
-            logger.info(f"🌐 Health check web server running on port {port}")
+            print(f"🌐 Health check web server running on port {port}")
             httpd.serve_forever()
     except Exception as e:
-        logger.error(f"Failed to start health server on port {port}: {e}")
+        print(f"❌ Failed to start health server on port {port}: {e}")
+
+# Start health server immediately at module load time so Render detects the open port instantly
+threading.Thread(target=run_health_server, daemon=True).start()
 
 # Logging setup
 logging.basicConfig(
@@ -520,10 +523,6 @@ async def cmd_stats(client: Client, message: Message):
 
 async def main():
     logger.info("Starting WordSeekBot Automation Script (auto.py)...")
-
-    # Start 24/7 health check web server in background thread for Render
-    threading.Thread(target=run_health_server, daemon=True).start()
-
     await init_userbot()
 
     if bot:
