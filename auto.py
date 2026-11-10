@@ -31,9 +31,12 @@ except RuntimeError:
     _loop = asyncio.new_event_loop()
     asyncio.set_event_loop(_loop)
 
-from pyrogram import Client, filters, enums, idle
-from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from pyrogram import Client, filters as p_filters, enums, idle
+from pyrogram.types import Message as PMessage, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from pyrogram.errors import SessionPasswordNeeded, PhoneCodeInvalid, PhoneCodeExpired
+
+from telegram import Update
+from telegram.ext import Application, CommandHandler, MessageHandler, filters as tg_filters, ContextTypes
 
 load_dotenv()
 
@@ -65,25 +68,75 @@ logging.basicConfig(
 )
 logger = logging.getLogger("WordSeekAutoBot")
 
+def escape_html(text: str) -> str:
+    if not text:
+        return ""
+    return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+
 API_ID = int(os.getenv("API_ID", "24967812"))
 API_HASH = os.getenv("API_HASH", "1319741088339b33a579bb8cb2e9c8ec")
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8641208496:AAEWdBZg6gP7g8i5QP_1GKZR-_BPunzmWpW")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8641208496:AAHg-3wEKC4ogsymjHecCL6hy7sPvGbml0Q")
 OWNER_ID = int(os.getenv("OWNER_ID", "5193216992"))
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "auto_wordbot.db")
 
 WORDS_4 = [
-    "BARE", "CODE", "DUST", "ECHO", "FIRE", "GOLD", "HATE", "IDEA",
-    "JUMP", "KING", "LOVE", "MOON", "NEAR", "OPEN", "PLAY", "QUIZ",
-    "ROSE", "STAR", "TIME", "USER", "VOICE", "WIND", "YOUTH", "ZEBRA",
-    "BEAR", "COLD", "DARK", "EAST", "FAST", "GOOD", "HOME", "IRON"
+    "ABLE", "ACID", "AGED", "ALSO", "AREA", "ARMY", "AWAY", "BABY", "BACK", "BALL",
+    "BAND", "BANK", "BASE", "BATH", "BEAR", "BEAT", "BEEN", "BEER", "BELL", "BELT",
+    "BEST", "BIRD", "BLOW", "BLUE", "BOAT", "BODY", "BOMB", "BOND", "BONE", "BOOK",
+    "BOOM", "BORN", "BOSS", "BOTH", "BOWL", "BULK", "BURN", "BUSH", "BUSY", "CALL",
+    "CALM", "CAME", "CAMP", "CARD", "CARE", "CASE", "CASH", "CAST", "CELL", "CHAT",
+    "CHIP", "CITY", "CLUB", "COAL", "COAT", "CODE", "COLD", "COME", "COOK", "COOL",
+    "COPE", "COPY", "CORE", "COST", "CREW", "CROP", "DARK", "DATA", "DATE", "DAWN",
+    "DAYS", "DEAD", "DEAL", "DEAN", "DEAR", "DEBT", "DEEP", "DENY", "DESK", "DIAL",
+    "DIET", "DISC", "DISK", "DOES", "DONE", "DOOR", "DOSE", "DOWN", "DRAW", "DREW",
+    "DROP", "DRUG", "DUAL", "DUCK", "DUST", "DUTY", "EACH", "EARN", "EASE", "EAST",
+    "EASY", "EDGE", "ELSE", "EVEN", "EVER", "EVIL", "EXAM", "FACE", "FACT", "FAIL",
+    "FAIR", "FALL", "FARM", "FAST", "FATE", "FEAR", "FEED", "FEEL", "FEET", "FELL",
+    "FELT", "FILE", "FILL", "FILM", "FIND", "FINE", "FIRE", "FIRM", "FISH", "FIVE",
+    "FLAT", "FLOW", "FOOD", "FOOT", "FORD", "FORM", "FORT", "FOUR", "FREE", "FROM",
+    "FUEL", "FULL", "FUND", "GAIN", "GAME", "GATE", "GAVE", "GEAR", "GIFT", "GIRL",
+    "GIVE", "GLAD", "GOAL", "GOAT", "GOLD", "GONE", "GOOD", "GRAY", "GREW", "GRID",
+    "GROW", "GULF", "HAIR", "HALF", "HALL", "HAND", "HANG", "HARD", "HARM", "HATE",
+    "HAVE", "HEAD", "HEAR", "HEAT", "HELD", "HELL", "HELP", "HERE", "HERO", "HIGH",
+    "HILL", "HIRE", "HOLD", "HOLE", "HOLY", "HOME", "HOPE", "HOST", "HOUR", "HUGE",
+    "HUNG", "HUNT", "HURT", "IDEA", "INCH", "INTO", "IRON", "ITEM", "JACK", "JANE",
+    "JEAN", "JOIN", "JUMP", "JUST", "KEEP", "KENT", "KEPT", "KICK", "KILL", "KIND",
+    "KING", "KNEE", "KNEW", "KNOW", "LACK", "LADY", "LAID", "LAKE", "LAND", "LANE",
+    "LAST", "LATE", "LEAD", "LEFT", "LESS", "LIFE", "LIFT", "LIKE", "LINE", "LINK",
+    "LION", "LIST", "LIVE", "LOAD", "LOAN", "LOCK", "LOGO", "LONG", "LOOK", "LORD",
+    "LOSE", "LOSS", "LOST", "LOVE", "LUCK", "MADE", "MAIL", "MAIN", "MAKE", "MALE",
+    "MANY", "MARK", "MASS", "MATT", "MEAL", "MEAN", "MEAT", "MEET", "MENU", "MERE",
+    "MILD", "MILE", "MILK", "MIND", "MINE", "MODE", "MOON", "MORE", "MOST", "MOVE",
+    "MUCH", "MUST", "NAME", "NAVY", "NEAR", "NECK", "NEED", "NEWS", "NEXT", "NICE",
+    "NICK", "NIGHT", "NODE", "NONE", "NOSE", "NOTE", "OKAY", "ONCE", "ONLY", "OPEN",
+    "PACK", "PAGE", "PAID", "PAIN", "PAIR", "PARK", "PART", "PASS", "PAST", "PATH",
+    "PEAK", "PICK", "PINK", "PLAN", "PLAY", "PLOT", "PLUG", "PLUS", "POEM", "POET",
+    "POLL", "POOL", "POOR", "PORT", "POST", "PULL", "PURE", "PUSH", "RACE", "RAIL",
+    "RAIN", "RANK", "RARE", "RATE", "READ", "REAL", "REAR", "RELY", "RENT", "REST",
+    "RICE", "RICH", "RIDE", "RING", "RISE", "RISK", "ROAD", "ROCK", "ROLE", "ROLL",
+    "ROOF", "ROOM", "ROOT", "ROSE", "RULE", "RUSH", "SAFE", "SAID", "SAKE", "SALE",
+    "SALT", "SAME", "SAND", "SAVE", "SEAT", "SEED", "SEEK", "SEEM", "SEEN", "SELF",
+    "SELL", "SEND", "SENT", "SHIP", "SHOP", "SHOT", "SHOW", "SHUT", "SICK", "SIDE",
+    "SIGN", "SITE", "SIZE", "SKIN", "SLIP", "SLOW", "SNOW", "SOFT", "SOIL", "SOLD",
+    "SOLE", "SOME", "SONG", "SOON", "SORT", "SOUL", "SPOT", "STAR", "STAY", "STEP",
+    "STOP", "SUCH", "SUIT", "SURE", "TAKE", "TALK", "TALL", "TANK", "TAPE", "TASK",
+    "TEAM", "TECH", "TELL", "TEND", "TERM", "TEST", "TEXT", "THAN", "THAT", "THEM",
+    "THEN", "THEY", "THIS", "THUS", "TIDE", "TIED", "TIME", "TINY", "TOLD", "TOLL",
+    "TONE", "TONY", "TOOK", "TOOL", "TOUR", "TOWN", "TREE", "TRIP", "TRUE", "TUBE",
+    "TURN", "TWIN", "TYPE", "UNIT", "UPON", "USED", "USER", "VARY", "VAST", "VERY",
+    "VIEW", "VOTE", "WAGE", "WAIT", "WAKE", "WALK", "WALL", "WANT", "WARD", "WARM",
+    "WASH", "WAVE", "WAYS", "WEAK", "WEAR", "WEEK", "WELL", "WENT", "WEST", "WHAT",
+    "WHEN", "WHOM", "WIDE", "WIFE", "WILD", "WILL", "WIND", "WINE", "WING", "WISH",
+    "WITH", "WOOD", "WORD", "WORK", "YARD", "YEAR", "YOUR", "ZERO", "ZONE"
 ]
 
 WORDS_5 = [
     "APPLE", "BEACH", "CHAIR", "DANCE", "EAGLE", "FRUIT", "GRAPE", "HOUSE",
     "IMAGE", "JUICE", "KNIFE", "LEMON", "MOUSE", "NIGHT", "OCEAN", "PIANO",
     "QUEEN", "RIVER", "SMILE", "TIGER", "UNITY", "VOICE", "WATER", "YOUTH",
-    "BREAD", "CLOCK", "DRIVE", "EARTH", "FLOUR", "GREEN", "HEART", "LIGHT"
+    "BREAD", "CLOCK", "DRIVE", "EARTH", "FLOUR", "GREEN", "HEART", "LIGHT",
+    "WORLD", "SMART", "BRAIN", "POWER", "DREAM", "STORY", "MUSIC", "SOUND"
 ]
 
 class AutoWordDatabase:
@@ -203,54 +256,228 @@ class AutoWordDatabase:
 
 db = AutoWordDatabase(DB_PATH)
 
-# Controller Bot Client
-bot = Client(
-    "wordseek_controller_bot",
-    api_id=API_ID,
-    api_hash=API_HASH,
-    bot_token=BOT_TOKEN
-) if BOT_TOKEN else None
-
 userbot: Optional[Client] = None
+telegram_app: Optional[Application] = None
 user_states: Dict[int, dict] = {}
 
 def register_word_seek_handler(client: Client):
-    @client.on_message(filters.incoming & filters.chat(["@WordSeekBot", 539373722]))
-    async def word_seek_listener(c: Client, message: Message):
+    @client.on_message(p_filters.me & p_filters.group)
+    async def user_manual_message_listener(c: Client, message: PMessage):
         chat_id = message.chat.id
         chat_info = db.get_chat(chat_id)
         if not chat_info or not chat_info.get("is_enabled"):
             return
 
+        text = (message.text or message.caption or "").strip()
+        if not text:
+            return
+
+        text_upper = text.upper()
+        game_mode = chat_info.get("game_mode", "new4")
+        word_len = 5 if game_mode == "new5" else 4
+
+        is_bot_command = text_upper in ["/NEW4", "/NEW5", "/END"]
+        is_auto_word_guess = (len(text_upper) == word_len and text_upper.isalpha())
+
+        # If it is NOT an automated script guess/command, it's a MANUAL USER MESSAGE!
+        if not is_bot_command and not is_auto_word_guess:
+            chat_title = message.chat.title or "Group Chat"
+            db.set_chat_enabled(chat_id, chat_title, game_mode, 0)
+            logger.info(f"🛑 Auto-Play automatically TURNED OFF in chat {chat_title} ({chat_id}) due to manual user message: '{text[:30]}'")
+
+            try:
+                if OWNER_ID != 0 and telegram_app:
+                    await telegram_app.bot.send_message(
+                        chat_id=OWNER_ID,
+                        text=f"🛑 **Auto-Play Automatically Turned OFF!**\n\n"
+                             f"• **Group:** `{chat_title}`\n"
+                             f"• **Reason:** Manual message detected from your account (`\"{text[:30]}\"`).",
+                        parse_mode='Markdown'
+                    )
+            except Exception:
+                pass
+
+    @client.on_message(p_filters.incoming)
+    @client.on_edited_message(p_filters.incoming)
+    async def word_seek_listener(c: Client, message: PMessage):
         text = message.text or message.caption or ""
         if not text:
             return
 
         text_lower = text.lower()
-        game_mode = chat_info.get("game_mode", "new4")
-        word_len = 5 if game_mode == "new5" else 4
 
-        if "guess" in text_lower or "word" in text_lower or "_" in text or "score" in text_lower:
+        # Extract sender details
+        sender_id = message.from_user.id if message.from_user else (message.sender_chat.id if message.sender_chat else 0)
+        sender_uname = (message.from_user.username or "").lower() if message.from_user else (message.sender_chat.username or "").lower() if message.sender_chat else ""
+        sender_fname = (message.from_user.first_name or "").lower() if message.from_user else (message.sender_chat.title or "").lower() if message.sender_chat else ""
+
+        # Match WordSeek bot by ID, username, display name, OR message content signatures
+        is_wordseek = (
+            sender_id == 539373722
+            or "wordseek" in sender_uname
+            or "wordseek" in sender_fname
+            or "4-letter mode" in text_lower
+            or "5-letter mode" in text_lower
+            or "/30 guesses" in text_lower
+            or "already a game" in text_lower
+            or "game started!" in text_lower
+        )
+
+        if is_wordseek:
+            await process_word_seek_response(c, message.chat.id, text)
+
+active_game_loops: Dict[int, asyncio.Task] = {}
+used_words_per_chat: Dict[int, Set[str]] = {}
+
+async def process_word_seek_response(client: Client, chat_id: int, text: str):
+    chat_info = db.get_chat(chat_id)
+    if not chat_info or not chat_info.get("is_enabled"):
+        return
+
+    text_lower = text.lower()
+    game_mode = chat_info.get("game_mode", "new4")
+    word_len = 5 if game_mode == "new5" else 4
+    word_pool = WORDS_5 if word_len == 5 else WORDS_4
+
+    # 1. Handle "game already in progress" -> Send /end then start fresh game
+    if "already a game" in text_lower or "use /end" in text_lower or "end the current game" in text_lower:
+        logger.info(f"⚠️ Game already in progress in chat {chat_id}! Resetting with /end...")
+        used_words_per_chat[chat_id] = set()
+        try:
+            await client.send_message(chat_id, "/end")
+            await asyncio.sleep(1.5)
+            await client.send_message(chat_id, f"/{game_mode}")
+            logger.info(f"🔄 Reset and sent `/{game_mode}` to chat {chat_id}")
+        except Exception as e:
+            logger.error(f"Failed to reset game in {chat_id}: {e}")
+        return
+
+    # 2. Restart on completion / win / game over / game ended / the word was
+    if any(kw in text_lower for kw in ["congratulations", "completed", "game over", "won!", "game ended", "start a new game", "the word was"]):
+        db.increment_stats(chat_id, solved_word=True, completed_game=True)
+        logger.info(f"🏆 Game ended in {chat_id}! Resetting used words and restarting /{game_mode}...")
+        used_words_per_chat[chat_id] = set()
+        try:
+            await asyncio.sleep(1.5)
+            await client.send_message(chat_id, f"/{game_mode}")
+            logger.info(f"🔄 Auto-restarted `/{game_mode}` in chat {chat_id}")
+        except Exception as e:
+            logger.error(f"Failed to start new game in {chat_id}: {e}")
+        return
+
+    # 3. Active game guess ONLY if WordSeekBot has explicitly started a game and is waiting for guesses
+    if any(kw in text_lower for kw in ["game started!", "guesses", "/30", "tries", "_"]):
+        if chat_id not in used_words_per_chat:
+            used_words_per_chat[chat_id] = set()
+
+        used_set = used_words_per_chat[chat_id]
+        available_words = [w for w in word_pool if w.capitalize() not in used_set]
+        if not available_words:
+            used_set.clear()
+            available_words = list(word_pool)
+
+        guess_word = random.choice(available_words).capitalize()
+        used_set.add(guess_word)
+
+        delay = random.uniform(0.6, 1.2)
+        await asyncio.sleep(delay)
+        try:
+            await client.send_message(chat_id, guess_word)
+            logger.info(f"🎮 Sent fresh word guess '{guess_word}' to WordSeekBot in chat {chat_id} (used: {len(used_set)})")
+        except Exception as e:
+            logger.error(f"Failed to send word guess in {chat_id}: {e}")
+
+async def run_game_loop_for_chat(client: Client, chat_id: int):
+    logger.info(f"🔄 Started active background game loop for chat {chat_id}")
+    last_action_time = 0.0
+
+    while True:
+        try:
+            chat_info = db.get_chat(chat_id)
+            if not chat_info or not chat_info.get("is_enabled"):
+                logger.info(f"🛑 Stopping active game loop for chat {chat_id} (disabled)")
+                break
+
+            game_mode = chat_info.get("game_mode", "new4")
+            word_len = 5 if game_mode == "new5" else 4
             word_pool = WORDS_5 if word_len == 5 else WORDS_4
-            guess_word = random.choice(word_pool)
 
-            await asyncio.sleep(random.uniform(1.2, 2.3))
-            try:
-                await c.send_message(chat_id, guess_word)
-                logger.info(f"🎮 Sent word guess '{guess_word}' to WordSeekBot in chat {chat_id}")
-            except Exception as e:
-                logger.error(f"Failed to send word guess in {chat_id}: {e}")
+            messages = []
+            async for m in client.get_chat_history(chat_id, limit=2):
+                messages.append(m)
 
-        if "congratulations" in text_lower or "completed" in text_lower or "game over" in text_lower or "score:" in text_lower:
-            db.increment_stats(chat_id, solved_word=True, completed_game=("completed" in text_lower or "congratulations" in text_lower))
+            now = time.time()
+            text_lower = ""
+            if messages:
+                last_m = messages[0]
+                text = last_m.text or last_m.caption or ""
+                text_lower = text.lower()
 
-            cmd = f"/{game_mode}"
-            await asyncio.sleep(2.0)
-            try:
-                await c.send_message(chat_id, cmd)
-                logger.info(f"🔄 Completed game session! Auto-started new game with '{cmd}' in chat {chat_id}")
-            except Exception as e:
-                logger.error(f"Failed to start new game in {chat_id}: {e}")
+            # 1. Reset if game already in progress
+            if "already a game" in text_lower or "use /end" in text_lower or "end the current game" in text_lower:
+                if now - last_action_time > 3.0:
+                    logger.info(f"⚠️ Resetting game in chat {chat_id}...")
+                    used_words_per_chat[chat_id] = set()
+                    await client.send_message(chat_id, "/end")
+                    await asyncio.sleep(1.2)
+                    await client.send_message(chat_id, f"/{game_mode}")
+                    last_action_time = time.time()
+
+            # 2. Restart on completion / win / game over / game ended / the word was
+            elif any(kw in text_lower for kw in ["congratulations", "completed", "game over", "won!", "game ended", "start a new game", "the word was"]):
+                if now - last_action_time > 3.0:
+                    db.increment_stats(chat_id, solved_word=True, completed_game=True)
+                    logger.info(f"🏆 Game ended in {chat_id}! Resetting used words and restarting /{game_mode}...")
+                    used_words_per_chat[chat_id] = set()
+                    await asyncio.sleep(1.2)
+                    await client.send_message(chat_id, f"/{game_mode}")
+                    last_action_time = time.time()
+
+            # 3. Continuous guessing loop: send a fresh unique 4/5-letter word every ~1.2s non-stop!
+            else:
+                if now - last_action_time > 1.2:
+                    if chat_id not in used_words_per_chat:
+                        used_words_per_chat[chat_id] = set()
+
+                    used_set = used_words_per_chat[chat_id]
+                    available_words = [w for w in word_pool if w.capitalize() not in used_set]
+                    if not available_words:
+                        used_set.clear()
+                        available_words = list(word_pool)
+
+                    guess_word = random.choice(available_words).capitalize()
+                    used_set.add(guess_word)
+
+                    await client.send_message(chat_id, guess_word)
+                    last_action_time = time.time()
+                    logger.info(f"🎮 Continuous loop sent word guess '{guess_word}' to chat {chat_id} (used: {len(used_set)})")
+
+        except Exception as e:
+            logger.error(f"Error in game loop for chat {chat_id}: {e}")
+
+        await asyncio.sleep(1.2)
+
+def ensure_chat_game_loop(client: Client, chat_id: int):
+    if chat_id not in active_game_loops or active_game_loops[chat_id].done():
+        active_game_loops[chat_id] = asyncio.create_task(run_game_loop_for_chat(client, chat_id))
+
+def start_all_enabled_game_loops(client: Client):
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute("SELECT chat_id FROM auto_chats WHERE is_enabled = 1")
+    rows = cursor.fetchall()
+    conn.close()
+    for row in rows:
+        ensure_chat_game_loop(client, row["chat_id"])
+
+async def setup_userbot_cache(client: Client):
+    try:
+        async for dialog in client.get_dialogs():
+            pass
+        logger.info("✅ Userbot dialogs cache synchronized successfully.")
+    except Exception as e:
+        logger.warning(f"Could not sync userbot dialogs cache: {e}")
 
 async def init_userbot():
     global userbot
@@ -265,6 +492,13 @@ async def init_userbot():
                 in_memory=True
             )
             await userbot.start()
+            await setup_userbot_cache(userbot)
+            register_word_seek_handler(userbot)
+            start_all_enabled_game_loops(userbot)
+            logger.info(f"✅ Connected Userbot account: {acc['account_name']} (ID: {acc['account_id']})")
+        except Exception as e:
+            logger.error(f"Failed to start saved userbot: {e}")
+            userbot = None
             register_word_seek_handler(userbot)
             logger.info(f"✅ Connected Userbot account: {acc['account_name']} (ID: {acc['account_id']})")
         except Exception as e:
@@ -283,14 +517,11 @@ def clear_telegram_webhook(token: str):
     except Exception as e:
         logger.warning(f"Could not clear webhook: {e}")
 
-@bot.on_message(filters.private & ~filters.bot)
-async def debug_incoming_message(client: Client, message: Message):
-    logger.info(f"📩 DEBUG: Received private message from User ID {message.from_user.id} (@{message.from_user.username}): '{message.text}'")
-
-@bot.on_message(filters.command(["start", "help"]) & filters.private)
-async def cmd_start(client: Client, message: Message):
-    if OWNER_ID != 0 and message.from_user.id != OWNER_ID:
-        await message.reply_text("🚫 Access Denied!")
+# Python-Telegram-Bot Handlers
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if OWNER_ID != 0 and user.id != OWNER_ID:
+        await update.message.reply_text("🚫 Access Denied!")
         return
 
     acc = db.get_account()
@@ -306,40 +537,40 @@ async def cmd_start(client: Client, message: Message):
         "• `/autoplay off` - Disable Auto-Play.\n"
         "• `/mode 4` - Set game mode to 4-letter (`/new4`).\n"
         "• `/mode 5` - Set game mode to 5-letter (`/new5`).\n"
+        "• `/chats` - View all group chats your userbot is joined in.\n"
         "• `/stats` - View total words guessed & games completed."
     )
-    await message.reply_text(text)
+    await update.message.reply_text(text, parse_mode='Markdown')
 
-@bot.on_message(filters.command("addacc") & filters.private)
-async def cmd_addacc(client: Client, message: Message):
-    if OWNER_ID != 0 and message.from_user.id != OWNER_ID:
+async def cmd_addacc(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if OWNER_ID != 0 and user.id != OWNER_ID:
         return
-
-    user_id = message.from_user.id
-    user_states[user_id] = {"step": "waiting_phone"}
-    await message.reply_text(
+    user_states[user.id] = {"step": "waiting_phone"}
+    await update.message.reply_text(
         "📱 **Telegram Account Login Wizard**\n\n"
-        "Kripya apne Telegram account ka **Phone Number** country code ke sath send karein (e.g. `+919876543210`):"
+        "Kripya apne Telegram account ka **Phone Number** country code ke sath send karein (e.g. `+919876543210`):",
+        parse_mode='Markdown'
     )
 
-@bot.on_message(filters.command("addsession") & filters.private)
-async def cmd_addsession(client: Client, message: Message):
+async def cmd_addsession(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global userbot
-    if OWNER_ID != 0 and message.from_user.id != OWNER_ID:
-        await message.reply_text("🚫 Access Denied!")
+    user = update.effective_user
+    if OWNER_ID != 0 and user.id != OWNER_ID:
+        await update.message.reply_text("🚫 Access Denied!")
         return
 
-    args = message.command
-    if len(args) < 2:
-        await message.reply_text(
+    args = context.args
+    if not args:
+        await update.message.reply_text(
             "⚠️ **Usage:** `/addsession <pyrogram_session_string>`\n\n"
             "Aap apni Pyrogram v2 Session String direct command ke sath bhej sakte hain.",
             parse_mode='Markdown'
         )
         return
 
-    session_str = args[1].strip()
-    status_msg = await message.reply_text("🔄 **Testing & Connecting Session String...**")
+    session_str = args[0].strip()
+    status_msg = await update.message.reply_text("🔄 **Testing & Connecting Session String...**")
 
     try:
         temp_client = Client(
@@ -359,6 +590,7 @@ async def cmd_addsession(client: Client, message: Message):
             await userbot.stop()
 
         userbot = temp_client
+        await setup_userbot_cache(userbot)
         register_word_seek_handler(userbot)
         logger.info(f"✅ Connected Session String account: {acc_name} (ID: {me.id})")
 
@@ -366,21 +598,159 @@ async def cmd_addsession(client: Client, message: Message):
             f"✅ **Session String Linked Successfully!** 🎉\n\n"
             f"• **Name:** `{acc_name}`\n"
             f"• **User ID:** `{me.id}`\n\n"
-            "Aapka userbot ab @WordSeekBot ke sath ready hai!"
+            "Aapka userbot ab @WordSeekBot ke sath ready hai!",
+            parse_mode='Markdown'
         )
     except Exception as e:
         await status_msg.edit_text(f"❌ Failed to connect session string: `{e}`")
 
-@bot.on_message(filters.private)
-async def handle_private_states(client: Client, message: Message):
-    global userbot
-    if OWNER_ID != 0 and message.from_user.id != OWNER_ID:
+async def cmd_autoplay_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if OWNER_ID != 0 and user.id != OWNER_ID:
+        return
+    if update.message.chat.type != 'private':
+        await update.message.reply_text("⚠️ Kripya `/autoplay off` command bot ke **Private Chat** mein use karein.")
         return
 
-    user_id = message.from_user.id
-    text = (message.text or "").strip()
-    state = user_states.get(user_id)
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM auto_chats WHERE is_enabled = 1")
+    rows = cursor.fetchall()
+    conn.close()
 
+    if not rows:
+        await update.message.reply_text("⚠️ Wahan koi autoplay nahi chal raha ha!")
+        return
+
+    enabled_chats = [dict(r) for r in rows]
+    user_states[user.id] = {"step": "disabling_chat", "enabled_chats": enabled_chats}
+
+    lines = [f"📋 **Select Group Chat to Disable Auto-Play:**\n"]
+    for idx, c in enumerate(enabled_chats, 1):
+        lines.append(f"{idx}. **{escape_html(c['chat_title'])}** (`/{c['game_mode']}`)")
+    lines.append("\n👉 *Kripya disable karne ke liye us Group ka **Number** send karein:*")
+
+    await update.message.reply_text("\n".join(lines), parse_mode='Markdown')
+
+async def cmd_autoplay(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if OWNER_ID != 0 and user.id != OWNER_ID:
+        return
+    if update.message.chat.type != 'private':
+        await update.message.reply_text("⚠️ Kripya `/autoplay` command bot ke **Private Chat** mein use karein taaki aap interactive wizard se group select kar sakein!")
+        return
+
+    args = context.args
+    if args and args[0].lower() == "off":
+        await cmd_autoplay_off(update, context)
+        return
+
+    if not userbot or not userbot.is_connected:
+        await update.message.reply_text("🔴 Userbot connected nahi hai! Pehle account link karein using `/addacc` ya `/addsession`.")
+        return
+
+    status_msg = await update.message.reply_text("🔄 Fetching your joined group chats...")
+    groups = []
+    try:
+        async for dialog in userbot.get_dialogs():
+            if dialog.chat.type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP]:
+                chat_info = db.get_chat(dialog.chat.id)
+                is_on = bool(chat_info and chat_info.get("is_enabled"))
+                mode = chat_info.get("game_mode", "new4") if chat_info else "new4"
+                groups.append({
+                    "id": dialog.chat.id,
+                    "title": dialog.chat.title,
+                    "is_on": is_on,
+                    "mode": mode
+                })
+    except Exception as e:
+        await status_msg.edit_text(f"❌ Failed to fetch chats: `{e}`")
+        return
+
+    if not groups:
+        await status_msg.edit_text("⚠️ Userbot kisi bhi Group Chat mein joined nahi hai!")
+        return
+
+    user_states[user.id] = {"step": "selecting_chat", "groups": groups}
+
+    lines = [f"📋 **Group Chats Auto-Play Dashboard:**\n"]
+    for idx, g in enumerate(groups, 1):
+        badge = f"🟢 ON (`/{g['mode']}`)" if g["is_on"] else "🔴 OFF"
+        lines.append(f"{idx}. **{escape_html(g['title'])}** ({badge})")
+    lines.append("\n👉 *Kripya kisi bhi Group ka **Number** send karein (e.g. `1` ya `5`):*")
+    lines.append("• *Agar Auto-Play ON hoga, toh number bhejne par OFF ho jayega.*")
+    lines.append("• *Agar OFF hoga, toh game mode select karke ON ho jayega.*")
+
+    await status_msg.edit_text("\n".join(lines), parse_mode='Markdown')
+
+async def cmd_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if OWNER_ID != 0 and user.id != OWNER_ID:
+        return
+    chat_id = update.message.chat.id
+    chat_title = update.message.chat.title or "Private Chat"
+    args = context.args
+    val = args[0] if args else "4"
+    mode = "new5" if val == "5" else "new4"
+    chat_info = db.get_chat(chat_id)
+    enabled = chat_info.get("is_enabled", 1) if chat_info else 1
+    db.set_chat_enabled(chat_id, chat_title, mode, enabled)
+    await update.message.reply_text(f"✅ WordSeekBot Game Mode set to `/{mode}` (`{val}-letter words`)!", parse_mode='Markdown')
+
+async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    stats = db.get_stats()
+    text = (
+        f"📊 **WordSeekBot Auto Player Statistics** 🎮\n\n"
+        f"• 🔠 **Total Words Solved:** `{stats['total_words']}`\n"
+        f"• 🏆 **Total Games Completed:** `{stats['total_games']}`\n"
+        f"• 🤖 **Target Bot:** `@WordSeekBot`"
+    )
+    await update.message.reply_text(text, parse_mode='Markdown')
+
+async def cmd_chats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if OWNER_ID != 0 and user.id != OWNER_ID:
+        await update.message.reply_text("🚫 Access Denied!")
+        return
+
+    if not userbot or not userbot.is_connected:
+        await update.message.reply_text("🔴 Userbot is not connected! Please link an account first using `/addacc` or `/addsession`.", parse_mode='Markdown')
+        return
+
+    status_msg = await update.message.reply_text("🔄 Fetching joined group chats...")
+    groups = []
+    try:
+        async for dialog in userbot.get_dialogs():
+            if dialog.chat.type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP]:
+                groups.append(f"• **{dialog.chat.title}** (`{dialog.chat.id}`)")
+    except Exception as e:
+        await status_msg.edit_text(f"❌ Failed to fetch chats: `{e}`")
+        return
+
+    if not groups:
+        await status_msg.edit_text("⚠️ Userbot kisi bhi Group Chat mein joined nahi hai!")
+        return
+
+    groups_text = "\n".join(groups[:30])
+    text = (
+        f"📋 **Joined Group Chats List (Total: {len(groups)})**:\n\n"
+        f"{groups_text}\n\n"
+        "💡 *Aap jis bhi group mein auto-play on karna chahte hain, us group mein jaakar `/autoplay on` aur `/mode 4` send karein, fir `/new4` se game start karein!*"
+    )
+    await status_msg.edit_text(text, parse_mode='Markdown')
+
+async def handle_private_states(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global userbot
+    user = update.effective_user
+    if not user or (OWNER_ID != 0 and user.id != OWNER_ID):
+        return
+    if update.message.chat.type != 'private':
+        return
+
+    user_id = user.id
+    text = (update.message.text or "").strip()
+    state = user_states.get(user_id)
     if not state:
         return
 
@@ -388,7 +758,7 @@ async def handle_private_states(client: Client, message: Message):
 
     if step == "waiting_phone":
         phone = text
-        status_msg = await message.reply_text("🔄 Requesting verification code from Telegram...")
+        status_msg = await update.message.reply_text("🔄 Requesting verification code from Telegram...")
         try:
             temp_client = Client(
                 f"temp_login_{user_id}",
@@ -407,7 +777,8 @@ async def handle_private_states(client: Client, message: Message):
             }
             await status_msg.edit_text(
                 "✅ **Verification Code Sent!**\n\n"
-                "Kripya Telegram official app par aaya hua **OTP Code** yahan send karein (agar spaces ho toh hata dein, e.g. `12345`):"
+                "Kripya Telegram official app par aaya hua **OTP Code** yahan send karein (agar spaces ho toh hata dein, e.g. `12345`):",
+                parse_mode='Markdown'
             )
         except Exception as e:
             await status_msg.edit_text(f"❌ Failed to send code: `{e}`")
@@ -418,7 +789,7 @@ async def handle_private_states(client: Client, message: Message):
         phone = state.get("phone")
         temp_client = state.get("client")
         phone_code_hash = state.get("phone_code_hash")
-        status_msg = await message.reply_text("🔄 Signing in...")
+        status_msg = await update.message.reply_text("🔄 Signing in...")
 
         try:
             await temp_client.sign_in(phone, phone_code_hash, code)
@@ -438,19 +809,22 @@ async def handle_private_states(client: Client, message: Message):
                 in_memory=True
             )
             await userbot.start()
+            await setup_userbot_cache(userbot)
             register_word_seek_handler(userbot)
 
             await status_msg.edit_text(
                 f"✅ **Telegram Account Linked Successfully!** 🎉\n\n"
                 f"• **Name:** `{acc_name}`\n"
                 f"• **User ID:** `{me.id}`\n\n"
-                "Aapka userbot ab @WordSeekBot ke sath ready hai!"
+                "Aapka userbot ab @WordSeekBot ke sath ready hai!",
+                parse_mode='Markdown'
             )
         except SessionPasswordNeeded:
             user_states[user_id]["step"] = "waiting_password"
             await status_msg.edit_text(
                 "🔒 **Two-Step Verification (2FA) Required!**\n\n"
-                "Kripya apne account ka **Cloud Password** send karein:"
+                "Kripya apne account ka **Cloud Password** send karein:",
+                parse_mode='Markdown'
             )
         except Exception as e:
             try:
@@ -463,7 +837,7 @@ async def handle_private_states(client: Client, message: Message):
     elif step == "waiting_password":
         password = text
         temp_client = state.get("client")
-        status_msg = await message.reply_text("🔄 Verifying 2FA password...")
+        status_msg = await update.message.reply_text("🔄 Verifying 2FA password...")
 
         try:
             await temp_client.check_password(password)
@@ -483,12 +857,14 @@ async def handle_private_states(client: Client, message: Message):
                 in_memory=True
             )
             await userbot.start()
+            await setup_userbot_cache(userbot)
             register_word_seek_handler(userbot)
 
             await status_msg.edit_text(
                 f"✅ **Telegram Account Linked Successfully (2FA Verified)!** 🎉\n\n"
                 f"• **Name:** `{acc_name}`\n"
-                f"• **User ID:** `{me.id}`"
+                f"• **User ID:** `{me.id}`",
+                parse_mode='Markdown'
             )
         except Exception as e:
             try:
@@ -498,69 +874,149 @@ async def handle_private_states(client: Client, message: Message):
             await status_msg.edit_text(f"❌ Password verification failed: `{e}`")
             user_states.pop(user_id, None)
 
-@bot.on_message(filters.command(["autoplay", "mode"]) & (filters.private | filters.group))
-async def cmd_config(client: Client, message: Message):
-    if OWNER_ID != 0 and message.from_user.id != OWNER_ID:
-        return
+    elif step == "selecting_chat":
+        try:
+            choice = int(text)
+            groups = state.get("groups", [])
+            if choice < 1 or choice > len(groups):
+                await update.message.reply_text("⚠️ Invalid number! Kripya list mein diya gaya sahi number send karein.")
+                return
+            selected_group = groups[choice - 1]
+            chat_id = selected_group["id"]
+            chat_title = selected_group["title"]
 
-    chat_id = message.chat.id
-    chat_title = message.chat.title or "Private Chat"
-    args = message.command
+            chat_info = db.get_chat(chat_id)
+            is_on = bool(chat_info and chat_info.get("is_enabled"))
 
-    if not args:
-        await message.reply_text("⚠️ Usage: `/autoplay on` or `/mode 4` / `/mode 5`")
-        return
+            if is_on:
+                # Auto-Play is currently ON -> Toggle OFF!
+                db.set_chat_enabled(chat_id, chat_title, chat_info.get("game_mode", "new4"), 0)
+                user_states.pop(user_id, None)
+                await update.message.reply_text(
+                    f"🛑 **Auto-Play Turned OFF!**\n\n"
+                    f"• **Group:** `{chat_title}`\n"
+                    f"• **Status:** Disabled 🔴",
+                    parse_mode='Markdown'
+                )
+            else:
+                # Auto-Play is currently OFF -> Ask for Game Mode to turn ON!
+                user_states[user_id] = {
+                    "step": "selecting_mode",
+                    "chat_id": chat_id,
+                    "chat_title": chat_title
+                }
+                await update.message.reply_text(
+                    f"🎮 **Selected Group:** `{chat_title}`\n"
+                    f"• **Status:** Currently OFF 🔴\n\n"
+                    "Kripya game mode select karke Auto-Play ON karein:\n"
+                    "1. `/new4` (4-Letter Words)\n"
+                    "2. `/new5` (5-Letter Words)\n\n"
+                    "👉 *Number send karein (`4` ya `5`):*",
+                    parse_mode='Markdown'
+                )
+        except ValueError:
+            await update.message.reply_text("⚠️ Kripya valid number send karein (e.g. `1`, `2`, etc.).")
 
-    cmd = args[0].lower()
-    if cmd == "autoplay":
-        sub = args[1].lower() if len(args) > 1 else "on"
-        enabled = 1 if sub == "on" else 0
-        chat_info = db.get_chat(chat_id)
-        mode = chat_info.get("game_mode", "new4") if chat_info else "new4"
-        db.set_chat_enabled(chat_id, chat_title, mode, enabled)
-        await message.reply_text(f"✅ Auto-Play for WordSeekBot is now `{'ENABLED 🟢' if enabled else 'DISABLED 🔴'}` in this chat!")
+    elif step == "selecting_mode":
+        chat_id = state.get("chat_id")
+        chat_title = state.get("chat_title")
+        val = text.strip()
+        if val in ["4", "new4", "1"]:
+            mode = "new4"
+        elif val in ["5", "new5", "2"]:
+            mode = "new5"
+        else:
+            await update.message.reply_text("⚠️ Invalid choice! Kripya `4` ya `5` send karein.")
+            return
 
-    elif cmd == "mode":
-        val = args[1] if len(args) > 1 else "4"
-        mode = "new5" if val == "5" else "new4"
-        chat_info = db.get_chat(chat_id)
-        enabled = chat_info.get("is_enabled", 1) if chat_info else 1
-        db.set_chat_enabled(chat_id, chat_title, mode, enabled)
-        await message.reply_text(f"✅ WordSeekBot Game Mode set to `/{mode}` (`{val}-letter words`)!")
+        db.set_chat_enabled(chat_id, chat_title, mode, 1)
+        user_states.pop(user_id, None)
 
-@bot.on_message(filters.command("stats") & (filters.private | filters.group))
-async def cmd_stats(client: Client, message: Message):
-    stats = db.get_stats()
-    text = (
-        f"📊 **WordSeekBot Auto Player Statistics** 🎮\n\n"
-        f"• 🔠 **Total Words Solved:** `{stats['total_words']}`\n"
-        f"• 🏆 **Total Games Completed:** `{stats['total_games']}`\n"
-        f"• 🤖 **Target Bot:** `@WordSeekBot`"
-    )
-    await message.reply_text(text)
+        await update.message.reply_text(
+            f"✅ **Auto-Play Enabled Successfully!** 🎉\n\n"
+            f"• **Group:** `{chat_title}`\n"
+            f"• **Game Mode:** `/{mode}`\n\n"
+            f"🔄 *Userbot ab is group mein automatically `/{mode}` game start kar raha hai...*",
+            parse_mode='Markdown'
+        )
+
+        if userbot and userbot.is_connected:
+            ensure_chat_game_loop(userbot, chat_id)
+            try:
+                await userbot.send_message(chat_id, f"/{mode}")
+                logger.info(f"🚀 Auto-started game `/{mode}` in chat {chat_title} ({chat_id})")
+            except Exception as e:
+                logger.error(f"Failed to auto-start game in {chat_id}: {e}")
+
+    elif step == "disabling_chat":
+        try:
+            choice = int(text)
+            chats = state.get("enabled_chats", [])
+            if choice < 1 or choice > len(chats):
+                await update.message.reply_text("⚠️ Wahan koi autoplay nahi chal raha ha!")
+                return
+            target = chats[choice - 1]
+            chat_id = target["chat_id"]
+            chat_title = target["chat_title"]
+
+            db.set_chat_enabled(chat_id, chat_title, target["game_mode"], 0)
+            user_states.pop(user_id, None)
+
+            await update.message.reply_text(
+                f"🛑 **Auto-Play Disabled Successfully!**\n\n"
+                f"• **Group:** `{chat_title}`\n"
+                f"• **Status:** Disabled 🔴",
+                parse_mode='Markdown'
+            )
+        except ValueError:
+            await update.message.reply_text("⚠️ Wahan koi autoplay nahi chal raha ha!")
 
 async def main():
+    global telegram_app
     logger.info("Starting WordSeekBot Automation Script (auto.py)...")
     await init_userbot()
 
-    if bot:
+    telegram_app = Application.builder().token(BOT_TOKEN).build() if BOT_TOKEN else None
+    if telegram_app:
         clear_telegram_webhook(BOT_TOKEN)
-        await bot.start()
-        logger.info("WordSeek Controller Bot connected successfully!")
+
+        telegram_app.add_handler(CommandHandler(["start", "help"], cmd_start))
+        telegram_app.add_handler(CommandHandler("addacc", cmd_addacc))
+        telegram_app.add_handler(CommandHandler("addsession", cmd_addsession))
+        telegram_app.add_handler(CommandHandler("autoplay", cmd_autoplay))
+        telegram_app.add_handler(CommandHandler("mode", cmd_mode))
+        telegram_app.add_handler(CommandHandler("chats", cmd_chats))
+        telegram_app.add_handler(CommandHandler("groups", cmd_chats))
+        telegram_app.add_handler(CommandHandler("stats", cmd_stats))
+        telegram_app.add_handler(MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, handle_private_states))
+
+        try:
+            await telegram_app.initialize()
+            await telegram_app.start()
+            await telegram_app.updater.start_polling(drop_pending_updates=True)
+            logger.info("WordSeek Controller Bot connected successfully with python-telegram-bot!")
+        except Exception as e:
+            logger.error(f"Failed to start python-telegram-bot: {e}")
+
+        if OWNER_ID != 0:
+            try:
+                await telegram_app.bot.send_message(
+                    chat_id=OWNER_ID,
+                    text="🤖 **WordSeek Auto Bot started successfully!** 🚀\nType /start to view dashboard.",
+                    parse_mode='Markdown'
+                )
+            except Exception as e:
+                logger.warning(f"Could not send startup message to owner: {e}")
 
     await idle()
 
-    try:
-        if userbot and userbot.is_connected:
-            await userbot.stop()
-    except Exception:
-        pass
-
-    try:
-        if bot and bot.is_connected:
-            await bot.stop()
-    except Exception:
-        pass
+    if telegram_app:
+        try:
+            await telegram_app.updater.stop()
+            await telegram_app.stop()
+            await telegram_app.shutdown()
+        except Exception:
+            pass
 
 if __name__ == "__main__":
     asyncio.run(main())
