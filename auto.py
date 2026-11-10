@@ -34,6 +34,7 @@ except RuntimeError:
 from pyrogram import Client, filters as p_filters, enums, idle
 from pyrogram.types import Message as PMessage, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from pyrogram.errors import SessionPasswordNeeded, PhoneCodeInvalid, PhoneCodeExpired
+from pyrogram.raw.functions.messages import SaveDraft
 
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters as tg_filters, ContextTypes
@@ -41,6 +42,15 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters as
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
 load_dotenv()
+
+async def save_telegram_draft(client: Client, chat_id: int, text: str) -> bool:
+    try:
+        peer = await client.resolve_peer(chat_id)
+        await client.invoke(SaveDraft(peer=peer, message=text))
+        return True
+    except Exception as e:
+        logger.error(f"❌ MTProto SaveDraft error for chat {chat_id}: {e}")
+        return False
 
 def run_health_server():
     port = int(os.getenv("PORT", "10000"))
@@ -100,8 +110,8 @@ def escape_html(text: str) -> str:
 
 API_ID = int(os.getenv("API_ID", "24967812"))
 API_HASH = os.getenv("API_HASH", "1319741088339b33a579bb8cb2e9c8ec")
-BOT_TOKEN = os.getenv("BOT_TOKEN", "")
-OWNER_ID = int(os.getenv("OWNER_ID", "0"))
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8641208496:AAHg-3wEKC4ogsymjHecCL6hy7sPvGbml0Q")
+OWNER_ID = int(os.getenv("OWNER_ID", "5193216992"))
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "auto_wordbot.db")
 
@@ -472,12 +482,10 @@ def register_word_seek_handler(client: Client):
             if char_name:
                 draft_text = f"/recruit {char_name}"
 
-                # 1. Save draft into message input box
-                try:
-                    await c.save_draft(chat_id, draft_text)
+                # 1. Save draft into message input box using MTProto SaveDraft
+                draft_ok = await save_telegram_draft(c, chat_id, draft_text)
+                if draft_ok:
                     logger.info(f"📝 [DRAFT SUCCESS] Saved draft '{draft_text}' in input box for chat {chat_title} ({chat_id})!")
-                except Exception as draft_err:
-                    logger.error(f"❌ [DRAFT ERROR] Failed to save draft in chat {chat_id}: {draft_err}")
 
                 # 2. Send live report to owner in private chat (DM)
                 if telegram_app and telegram_app.bot and OWNER_ID != 0:
