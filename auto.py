@@ -198,6 +198,7 @@ class AutoWordDatabase:
                 CREATE TABLE IF NOT EXISTS drecruit_chats (
                     chat_id INTEGER PRIMARY KEY,
                     chat_title TEXT,
+                    target_bot TEXT DEFAULT '@Lookism_rec_bot',
                     is_enabled INTEGER DEFAULT 1
                 )
             """)
@@ -215,20 +216,26 @@ class AutoWordDatabase:
                 )
             """)
             cursor.execute("INSERT OR IGNORE INTO stats (id, total_words, total_games) VALUES (1, 0, 0)")
+            cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('target_bots', '@Lookism_rec_bot, @Gnejdjdjbot')")
             conn.commit()
             conn.close()
 
-    def set_drecruit_enabled(self, chat_id: int, chat_title: str, is_enabled: int = 1):
+    def set_drecruit_enabled(self, chat_id: int, chat_title: str, target_bot: str = '@Lookism_rec_bot', is_enabled: int = 1):
         with self._lock:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
+            try:
+                cursor.execute("ALTER TABLE drecruit_chats ADD COLUMN target_bot TEXT DEFAULT '@Lookism_rec_bot'")
+            except Exception:
+                pass
             cursor.execute("""
-                INSERT INTO drecruit_chats (chat_id, chat_title, is_enabled)
-                VALUES (?, ?, ?)
+                INSERT INTO drecruit_chats (chat_id, chat_title, target_bot, is_enabled)
+                VALUES (?, ?, ?, ?)
                 ON CONFLICT(chat_id) DO UPDATE SET
                     chat_title = excluded.chat_title,
+                    target_bot = excluded.target_bot,
                     is_enabled = excluded.is_enabled
-            """, (chat_id, chat_title, is_enabled))
+            """, (chat_id, chat_title, target_bot, is_enabled))
             conn.commit()
             conn.close()
 
@@ -387,9 +394,8 @@ def register_word_seek_handler(client: Client):
         if not d_info or not d_info.get("is_enabled"):
             return
 
-        target_bot = db.get_setting("target_bot")
-        if not target_bot:
-            return
+        target_bot_str = d_info.get("target_bot", "@Lookism_rec_bot")
+        target_list = [b.strip().lower().lstrip('@') for b in target_bot_str.split(",") if b.strip()]
 
         text = message.text or message.caption or ""
         if not text:
@@ -399,11 +405,11 @@ def register_word_seek_handler(client: Client):
         sender_uname = (message.from_user.username or "").lower() if message.from_user else (message.sender_chat.username or "").lower() if message.sender_chat else ""
         sender_fname = (message.from_user.first_name or "").lower() if message.from_user else (message.sender_chat.title or "").lower() if message.sender_chat else ""
 
-        target_clean = target_bot.strip().lower().lstrip('@')
-        is_target = (
-            target_clean in sender_uname
-            or target_clean in sender_fname
-            or target_clean in text.lower()
+        is_target = any(
+            t in sender_uname
+            or t in sender_fname
+            or t in text.lower()
+            for t in target_list
         )
 
         if not is_target:
@@ -426,11 +432,25 @@ def register_word_seek_handler(client: Client):
 
         if char_name:
             draft_text = f"/recruit {char_name}"
+            chat_title = message.chat.title or f"Chat {chat_id}"
             try:
                 await c.save_draft(chat_id, draft_text)
-                logger.info(f"📝 Saved DRecruit draft '{draft_text}' in chat {chat_id}")
+                logger.info(f"📝 SUCCESS: Saved DRecruit draft '{draft_text}' in chat {chat_id}")
+
+                if OWNER_ID != 0 and telegram_app:
+                    await telegram_app.bot.send_message(
+                        chat_id=OWNER_ID,
+                        text=(
+                            f"🎴 **CARD SPAWN TRACKED & DRAFTED!** 🚨\n\n"
+                            f"• **Group:** `{chat_title}` (`{chat_id}`)\n"
+                            f"• **Target Bot:** `{target_bot_str}`\n"
+                            f"• **Character Name:** `{char_name}`\n"
+                            f"• **Draft Set:** `{draft_text}` (Ready in input box!)"
+                        ),
+                        parse_mode='Markdown'
+                    )
             except Exception as e:
-                logger.error(f"Failed to save draft in chat {chat_id}: {e}")
+                logger.error(f"Failed to save draft or notify owner for chat {chat_id}: {e}")
 
     @client.on_message(p_filters.incoming)
     @client.on_edited_message(p_filters.incoming)
@@ -737,12 +757,46 @@ async def cmd_addt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db.set_setting("target_bot", bot_target)
     await update.message.reply_text(f"✅ Target Recruit Bot successfully set to: `{bot_target}`", parse_mode='Markdown')
 
+async def cmd_drecruit_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if OWNER_ID != 0 and user.id != OWNER_ID:
+        return
+    if update.message.chat.type != 'private':
+        await update.message.reply_text("⚠️ Kripya `/drecruit off` command bot ke **Private Chat** mein use karein.")
+        return
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM drecruit_chats WHERE is_enabled = 1")
+    rows = cursor.fetchall()
+    conn.close()
+
+    if not rows:
+        await update.message.reply_text("⚠️ Wahan koi drecruit nahi chal raha ha!")
+        return
+
+    enabled_chats = [dict(r) for r in rows]
+    user_states[user.id] = {"step": "disabling_drecruit_chat", "enabled_chats": enabled_chats}
+
+    lines = [f"📋 **Select Group Chat to Disable DRecruit:**\n"]
+    for idx, c in enumerate(enabled_chats, 1):
+        lines.append(f"{idx}. **{escape_html(c['chat_title'])}** (Bot: `{c.get('target_bot', '@Lookism_rec_bot')}`)")
+    lines.append("\n👉 *Kripya disable karne ke liye us Group ka **Number** send karein:*")
+
+    await update.message.reply_text("\n".join(lines), parse_mode='Markdown')
+
 async def cmd_drecruit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if OWNER_ID != 0 and user.id != OWNER_ID:
         return
     if update.message.chat.type != 'private':
         await update.message.reply_text("⚠️ Kripya `/drecruit` command bot ke **Private Chat** mein use karein taaki aap interactive wizard se group select kar sakein!")
+        return
+
+    args = context.args
+    if args and args[0].lower() == "off":
+        await cmd_drecruit_off(update, context)
         return
 
     if not userbot or not userbot.is_connected:
@@ -756,10 +810,12 @@ async def cmd_drecruit(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if dialog.chat.type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP]:
                 d_info = db.get_drecruit_chat(dialog.chat.id)
                 is_on = bool(d_info and d_info.get("is_enabled"))
+                bot_target = d_info.get("target_bot", "@Lookism_rec_bot") if d_info else "@Lookism_rec_bot"
                 groups.append({
                     "id": dialog.chat.id,
                     "title": dialog.chat.title,
-                    "is_on": is_on
+                    "is_on": is_on,
+                    "target_bot": bot_target
                 })
     except Exception as e:
         await status_msg.edit_text(f"❌ Failed to fetch chats: `{e}`")
@@ -773,11 +829,10 @@ async def cmd_drecruit(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     lines = [f"📋 **DRecruit Group Chats Dashboard:**\n"]
     for idx, g in enumerate(groups, 1):
-        badge = "🟢 ON" if g["is_on"] else "🔴 OFF"
+        badge = f"🟢 ON (`{g['target_bot']}`)" if g["is_on"] else "🔴 OFF"
         lines.append(f"{idx}. **{escape_html(g['title'])}** ({badge})")
     lines.append("\n👉 *Kripya kisi bhi Group ka **Number** send karein (e.g. `1`):*")
-    lines.append("• *Agar DRecruit ON hoga, toh number bhejne par OFF ho jayega.*")
-    lines.append("• *Agar OFF hoga, toh ON ho jayega.*")
+    lines.append("• *Number bhejne par us group ke liye Target Bot select karne ka option aayega.*")
 
     await status_msg.edit_text("\n".join(lines), parse_mode='Markdown')
 
@@ -1198,30 +1253,70 @@ async def handle_private_states(update: Update, context: ContextTypes.DEFAULT_TY
             chat_id = selected_group["id"]
             chat_title = selected_group["title"]
 
-            d_info = db.get_drecruit_chat(chat_id)
-            is_on = bool(d_info and d_info.get("is_enabled"))
-
-            if is_on:
-                db.set_drecruit_enabled(chat_id, chat_title, 0)
-                user_states.pop(user_id, None)
-                await update.message.reply_text(
-                    f"🛑 **DRecruit Turned OFF!**\n\n"
-                    f"• **Group:** `{chat_title}`\n"
-                    f"• **Status:** Disabled 🔴",
-                    parse_mode='Markdown'
-                )
-            else:
-                db.set_drecruit_enabled(chat_id, chat_title, 1)
-                user_states.pop(user_id, None)
-                await update.message.reply_text(
-                    f"✅ **DRecruit Turned ON!** 🎉\n\n"
-                    f"• **Group:** `{chat_title}`\n"
-                    f"• **Status:** Active 🟢\n\n"
-                    f"📝 *Jab bhi target bot is group mein card drop karega, script automatic `/recruit <name>` input box mein draft kar degi!*",
-                    parse_mode='Markdown'
-                )
+            user_states[user_id] = {
+                "step": "selecting_drecruit_bot",
+                "chat_id": chat_id,
+                "chat_title": chat_title
+            }
+            await update.message.reply_text(
+                f"🎮 **Selected Group:** `{chat_title}`\n\n"
+                "Kripya target recruit bot select karein:\n"
+                "1. `@Lookism_rec_bot`\n"
+                "2. `@Gnejdjdjbot`\n"
+                "3. Both / All (`@Lookism_rec_bot, @Gnejdjdjbot`)\n\n"
+                "👉 *Number send karein (`1`, `2`, ya `3`):*",
+                parse_mode='Markdown'
+            )
         except ValueError:
             await update.message.reply_text("⚠️ Kripya valid number send karein (e.g. `1`, `2`, etc.).")
+
+    elif step == "selecting_drecruit_bot":
+        chat_id = state.get("chat_id")
+        chat_title = state.get("chat_title")
+        val = text.strip()
+        if val in ["1", "@Lookism_rec_bot", "lookism"]:
+            target_bot = "@Lookism_rec_bot"
+        elif val in ["2", "@Gnejdjdjbot", "gnejdjdjbot"]:
+            target_bot = "@Gnejdjdjbot"
+        elif val in ["3", "both", "all"]:
+            target_bot = "@Lookism_rec_bot, @Gnejdjdjbot"
+        else:
+            target_bot = val if val.startswith("@") else f"@{val}"
+
+        db.set_drecruit_enabled(chat_id, chat_title, target_bot, 1)
+        user_states.pop(user_id, None)
+
+        await update.message.reply_text(
+            f"✅ **DRecruit Turned ON Successfully!** 🎉\n\n"
+            f"• **Group:** `{chat_title}`\n"
+            f"• **Target Bot:** `{target_bot}`\n"
+            f"• **Status:** Active 🟢\n\n"
+            f"📝 *Jab bhi ye bot is group mein card drop karega, script automatic `/recruit <name>` input box mein draft kar degi aur aapko DM par report bhej degi!*",
+            parse_mode='Markdown'
+        )
+
+    elif step == "disabling_drecruit_chat":
+        try:
+            choice = int(text)
+            chats = state.get("enabled_chats", [])
+            if choice < 1 or choice > len(chats):
+                await update.message.reply_text("⚠️ Wahan koi drecruit nahi chal raha ha!")
+                return
+            target = chats[choice - 1]
+            chat_id = target["chat_id"]
+            chat_title = target["chat_title"]
+
+            db.set_drecruit_enabled(chat_id, chat_title, target.get("target_bot", "@Lookism_rec_bot"), 0)
+            user_states.pop(user_id, None)
+
+            await update.message.reply_text(
+                f"🛑 **DRecruit Turned OFF Successfully!**\n\n"
+                f"• **Group:** `{chat_title}`\n"
+                f"• **Status:** Disabled 🔴",
+                parse_mode='Markdown'
+            )
+        except ValueError:
+            await update.message.reply_text("⚠️ Wahan koi drecruit nahi chal raha ha!")
 
     elif step == "disabling_chat":
         try:
