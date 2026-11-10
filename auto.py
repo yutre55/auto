@@ -1034,4 +1034,9 @@ async def main():
             pass
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    while True:
+        try:
+            asyncio.run(main())
+        except Exception as e:
+            logger.error(f"⚠️ Main script crashed with error: {e}. Auto-restarting in 3 seconds...")
+            time.sleep(3.0)
