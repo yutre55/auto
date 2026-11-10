@@ -448,9 +448,10 @@ async def run_game_loop_for_chat(client: Client, chat_id: int):
                     await client.send_message(chat_id, f"/{game_mode}")
                     last_action_time = time.time()
 
-            # 3. Continuous guessing loop: send a fresh unique 4/5-letter word every ~1.2s non-stop!
+            # 3. Continuous guessing loop: send a fresh unique 4/5-letter word every 0-3s random timing non-stop!
             else:
-                if now - last_action_time > 1.2:
+                delay_between = random.uniform(1.0, 3.0)
+                if now - last_action_time > delay_between:
                     if chat_id not in used_words_per_chat:
                         used_words_per_chat[chat_id] = set()
 
@@ -465,12 +466,45 @@ async def run_game_loop_for_chat(client: Client, chat_id: int):
 
                     await client.send_message(chat_id, guess_word)
                     last_action_time = time.time()
-                    logger.info(f"🎮 Continuous loop sent word guess '{guess_word}' to chat {chat_id} (used: {len(used_set)})")
+                    logger.info(f"🎮 Continuous loop sent word guess '{guess_word}' to chat {chat_id} (delay: {delay_between:.1f}s, used: {len(used_set)})")
 
         except Exception as e:
             logger.error(f"Error in game loop for chat {chat_id}: {e}")
 
-        await asyncio.sleep(1.2)
+        await asyncio.sleep(random.uniform(0.5, 3.0))
+
+async def watchdog_supervisor():
+    logger.info("🛡️ Self-healing watchdog supervisor started (checking every 5s)...")
+    while True:
+        try:
+            acc = db.get_account()
+            if acc and acc.get("session_string"):
+                global userbot
+                if not userbot or not userbot.is_connected:
+                    try:
+                        logger.warning("⚠️ Userbot disconnected! Reconnecting automatically...")
+                        userbot = Client(
+                            "wordseek_userbot_session",
+                            api_id=API_ID,
+                            api_hash=API_HASH,
+                            session_string=acc["session_string"],
+                            in_memory=True
+                        )
+                        await userbot.start()
+                        await setup_userbot_cache(userbot)
+                        register_word_seek_handler(userbot)
+                        start_all_enabled_game_loops(userbot)
+                        logger.info("✅ Userbot successfully reconnected by watchdog!")
+                    except Exception as e:
+                        logger.error(f"Watchdog failed to reconnect userbot: {e}")
+
+            if userbot and userbot.is_connected:
+                start_all_enabled_game_loops(userbot)
+
+        except Exception as e:
+            logger.error(f"Error in watchdog supervisor: {e}")
+
+        await asyncio.sleep(5.0)
 
 def ensure_chat_game_loop(client: Client, chat_id: int):
     if chat_id not in active_game_loops or active_game_loops[chat_id].done():
@@ -990,6 +1024,9 @@ async def main():
     global telegram_app
     logger.info("Starting WordSeekBot Automation Script (auto.py)...")
     await init_userbot()
+
+    # Start self-healing watchdog supervisor task
+    asyncio.create_task(watchdog_supervisor())
 
     telegram_app = Application.builder().token(BOT_TOKEN).build() if BOT_TOKEN else None
     if telegram_app:
