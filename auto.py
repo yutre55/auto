@@ -557,52 +557,6 @@ def register_word_seek_handler(client: Client):
 
         except Exception as e:
             logger.error(f"❌ Error in universal_drecruit_tracker: {e}")
-                            )
-                        except Exception:
-                            pass
-
-        except Exception as e:
-            logger.error(f"❌ Error in universal_drecruit_tracker: {e}")
-
-            # -------------------------------------------------------------
-            # CASE 3: NAME GUESS / RECRUIT COMMAND IN GROUP WHILE DROP IS ACTIVE
-            # -------------------------------------------------------------
-            last_drop_time = active_recruits_per_chat.get(chat_id, 0.0)
-            is_drop_active = (now - last_drop_time < 600)  # Active within 10 mins
-
-            if is_drop_active:
-                captured_name = ""
-
-                # If user or bot typed /recruit <name>
-                if text_lower.startswith("/recruit ") or text_lower.startswith("/claim ") or text_lower.startswith("/grab "):
-                    parts = text.split(maxsplit=1)
-                    if len(parts) > 1:
-                        captured_name = parts[1].strip()
-
-                # Or if message contains "Name: <name>"
-                elif "name:" in text_lower or "character:" in text_lower:
-                    captured_name = extract_character_name(text)
-
-                if captured_name and len(captured_name) < 50:
-                    draft_text = f"/recruit {captured_name}"
-                    draft_ok = await save_telegram_draft(c, chat_id, draft_text)
-                    if draft_ok:
-                        logger.info(f"📝 [DRAFT CAPTURED FROM CHAT GUESS!] Saved '{draft_text}' in group input box for '{chat_title}'!")
-
-                    if telegram_app and telegram_app.bot and OWNER_ID != 0:
-                        try:
-                            await telegram_app.bot.send_message(
-                                chat_id=OWNER_ID,
-                                text=(
-                                    f"⚡ **CHARACTER NAME CAPTURED FROM CHAT!** 🎯\n\n"
-                                    f"• **Group Chat:** `{chat_title}` (`{chat_id}`)\n"
-                                    f"• **Character Name:** `{captured_name}`\n"
-                                    f"• **Draft Set:** `{draft_text}` (Ready in group chat input box!)"
-                                ),
-                                parse_mode='Markdown'
-                            )
-                        except Exception:
-                            pass
 
         except Exception as e:
             logger.error(f"❌ Error in universal_drecruit_tracker: {e}")
