@@ -386,71 +386,88 @@ def register_word_seek_handler(client: Client):
             except Exception:
                 pass
 
-    @client.on_message(p_filters.incoming)
-    @client.on_edited_message(p_filters.incoming)
-    async def drecruit_drop_listener(c: Client, message: PMessage):
-        chat_id = message.chat.id
-        d_info = db.get_drecruit_chat(chat_id)
-        if not d_info or not d_info.get("is_enabled"):
-            return
+    @client.on_message()
+    async def universal_drecruit_tracker(c: Client, message: PMessage):
+        try:
+            if not message or not message.chat:
+                return
 
-        target_bot_str = d_info.get("target_bot", "@Lookism_rec_bot")
-        target_list = [b.strip().lower().lstrip('@') for b in target_bot_str.split(",") if b.strip()]
-
-        text = message.text or message.caption or ""
-        if not text:
-            return
-
-        sender_id = message.from_user.id if message.from_user else (message.sender_chat.id if message.sender_chat else 0)
-        sender_uname = (message.from_user.username or "").lower() if message.from_user else (message.sender_chat.username or "").lower() if message.sender_chat else ""
-        sender_fname = (message.from_user.first_name or "").lower() if message.from_user else (message.sender_chat.title or "").lower() if message.sender_chat else ""
-
-        is_target = any(
-            t in sender_uname
-            or t in sender_fname
-            or t in text.lower()
-            for t in target_list
-        )
-
-        if not is_target:
-            return
-
-        char_name = ""
-        m = re.search(r"(?:name|character|char):\s*([A-Za-z\s]+)(?:\s+code:|$)", text, re.IGNORECASE)
-        if m:
-            char_name = m.group(1).strip()
-        else:
-            lines = [l.strip() for l in text.split("\n") if l.strip()]
-            for line in lines:
-                if line.lower().startswith("name:") or line.lower().startswith("character:"):
-                    parts = line.split(":", 1)
-                    if len(parts) > 1:
-                        char_name = parts[1].strip()
-                        if "code:" in char_name.lower():
-                            char_name = char_name.split("Code:")[0].split("code:")[0].strip()
-                        break
-
-        if char_name:
-            draft_text = f"/recruit {char_name}"
+            chat_id = message.chat.id
             chat_title = message.chat.title or f"Chat {chat_id}"
-            try:
-                await c.save_draft(chat_id, draft_text)
-                logger.info(f"📝 SUCCESS: Saved DRecruit draft '{draft_text}' in chat {chat_id}")
+            text = message.text or message.caption or ""
 
-                if OWNER_ID != 0 and telegram_app:
-                    await telegram_app.bot.send_message(
-                        chat_id=OWNER_ID,
-                        text=(
-                            f"🎴 **CARD SPAWN TRACKED & DRAFTED!** 🚨\n\n"
-                            f"• **Group:** `{chat_title}` (`{chat_id}`)\n"
-                            f"• **Target Bot:** `{target_bot_str}`\n"
-                            f"• **Character Name:** `{char_name}`\n"
-                            f"• **Draft Set:** `{draft_text}` (Ready in input box!)"
-                        ),
-                        parse_mode='Markdown'
-                    )
-            except Exception as e:
-                logger.error(f"Failed to save draft or notify owner for chat {chat_id}: {e}")
+            sender = message.from_user or message.sender_chat
+            sender_uname = (sender.username or "").lower() if sender else ""
+            sender_name = (getattr(sender, "first_name", None) or getattr(sender, "title", None) or "").lower() if sender else ""
+
+            if text:
+                logger.info(f"📥 [LIVE RAW UPDATE] Chat: '{chat_title}' ({chat_id}) | Sender: @{sender_uname} ({sender_name}) | Text: {text[:80]}")
+
+            d_info = db.get_drecruit_chat(chat_id)
+            if not d_info or not d_info.get("is_enabled"):
+                return
+
+            target_bot_str = d_info.get("target_bot", "@Lookism_rec_bot, @Gnejdjdjbot")
+            target_list = [b.strip().lower().lstrip('@') for b in target_bot_str.split(",") if b.strip()]
+
+            is_target = any(
+                t in sender_uname
+                or t in sender_name
+                or t in text.lower()
+                for t in target_list
+            )
+
+            has_drop_signature = ("name:" in text.lower() or "character:" in text.lower() or "code:" in text.lower() or "tier:" in text.lower())
+
+            if not is_target and not has_drop_signature:
+                return
+
+            logger.info(f"🎯 [MATCHED RECRUIT DROP] In chat '{chat_title}' ({chat_id}) from sender @{sender_uname}! Parsing character name...")
+
+            char_name = ""
+            m = re.search(r"(?:name|character|char)[:\s]+([A-Za-z\s]+?)(?:\s+code:|\s+tier:|\n|$)", text, re.IGNORECASE)
+            if m:
+                char_name = m.group(1).strip()
+            else:
+                lines = [l.strip() for l in text.split("\n") if l.strip()]
+                for line in lines:
+                    if "name:" in line.lower() or "character:" in line.lower():
+                        parts = line.split(":", 1)
+                        if len(parts) > 1:
+                            potential = parts[1].strip()
+                            for stop_word in ["code", "tier", "worth", "id"]:
+                                if stop_word in potential.lower():
+                                    potential = potential.split(stop_word.capitalize())[0].split(stop_word)[0].strip()
+                            if potential and len(potential) < 30:
+                                char_name = potential
+                                break
+
+            if char_name:
+                draft_text = f"/recruit {char_name}"
+                try:
+                    await c.save_draft(chat_id, draft_text)
+                    logger.info(f"📝 [DRAFT SUCCESS] Saved draft '{draft_text}' in chat {chat_id}")
+
+                    if OWNER_ID != 0 and telegram_app:
+                        await telegram_app.bot.send_message(
+                            chat_id=OWNER_ID,
+                            text=(
+                                f"🎴 **CARD SPAWN TRACKED & DRAFTED!** 🚨\n\n"
+                                f"• **Group:** `{chat_title}` (`{chat_id}`)\n"
+                                f"• **Target Bot:** `@{sender_uname or 'unknown'}`\n"
+                                f"• **Character Name:** `{char_name}`\n"
+                                f"• **Draft Set:** `{draft_text}` (Ready in input box!)"
+                            ),
+                            parse_mode='Markdown'
+                        )
+                        logger.info(f"📨 [DM NOTIFICATION] Sent spawn report to owner {OWNER_ID}")
+                except Exception as e:
+                    logger.error(f"❌ [DRAFT ERROR] Failed to save draft in chat {chat_id}: {e}")
+            else:
+                logger.warning(f"⚠️ [PARSE WARNING] Matched drop in chat {chat_id}, but could not extract character name from: {text[:100]}")
+
+        except Exception as e:
+            logger.error(f"❌ Error in universal_drecruit_tracker: {e}")
 
     @client.on_message(p_filters.incoming)
     @client.on_edited_message(p_filters.incoming)
