@@ -1,15 +1,17 @@
 services:
-  - type: worker
-    name: sylvi-groq-bot
+  - type: web
+    name: wordseek-auto-bot
     env: python
     region: oregon
     plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: python bot.py
+    startCommand: python auto.py
     envVars:
       - key: BOT_TOKEN
         sync: false
       - key: OWNER_ID
         sync: false
-      - key: GROQ_KEYS
+      - key: API_ID
+        sync: false
+      - key: API_HASH
         sync: false

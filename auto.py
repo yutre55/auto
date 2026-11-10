@@ -61,6 +61,21 @@ def run_health_server():
 # Start health server immediately at module load time so Render detects the open port instantly
 threading.Thread(target=run_health_server, daemon=True).start()
 
+def keep_alive_ping():
+    port = int(os.getenv("PORT", "10000"))
+    time.sleep(20)
+    target_url = f"http://127.0.0.1:{port}/"
+    while True:
+        try:
+            req = urllib.request.Request(target_url, headers={"User-Agent": "WordSeekAutoBotKeepAlive/1.0"})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                pass
+        except Exception:
+            pass
+        time.sleep(240)  # Ping every 4 minutes to prevent Render 15-min sleep
+
+threading.Thread(target=keep_alive_ping, daemon=True).start()
+
 # Logging setup
 logging.basicConfig(
     level=logging.INFO,
