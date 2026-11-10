@@ -437,6 +437,7 @@ def register_word_seek_handler(client: Client):
                 pass
 
     @client.on_message()
+    @client.on_edited_message()
     async def universal_drecruit_tracker(c: Client, message: PMessage):
         try:
             if not message or not message.chat:
@@ -450,10 +451,7 @@ def register_word_seek_handler(client: Client):
             sender_uname = (sender.username or "").lower() if sender else ""
             sender_name = (getattr(sender, "first_name", None) or getattr(sender, "title", None) or "").lower() if sender else ""
 
-            if text:
-                logger.info(f"📥 [LIVE RAW UPDATE] Chat: '{chat_title}' ({chat_id}) | Sender: @{sender_uname} ({sender_name}) | Text: {text[:80]}")
-
-            # Target recruit bots list
+            # STRICT Target recruit bots ONLY
             target_list = ["lookism_rec_bot", "gnejdjdjbot"]
 
             # Also check drecruit_chats or custom settings
@@ -471,12 +469,46 @@ def register_word_seek_handler(client: Client):
                 for t in target_list
             )
 
-            has_card_signature = ("name:" in text.lower() or "character:" in text.lower()) and ("code:" in text.lower() or "tier:" in text.lower())
-
-            if not is_target_bot and not has_card_signature:
+            # Strictly ignore messages that are NOT from the target bots
+            if not is_target_bot:
                 return
 
-            logger.info(f"🎯 [MATCHED CARD DROP!] In '{chat_title}' ({chat_id}) from @{sender_uname or 'unknown'}: {text[:80]}")
+            if text:
+                logger.info(f"📥 [LIVE RECRUIT BOT MSG] Chat: '{chat_title}' ({chat_id}) | Sender: @{sender_uname} ({sender_name}) | Text: {text[:80]}")
+
+            char_name = extract_character_name(text)
+
+            if char_name:
+                draft_text = f"/recruit {char_name}"
+
+                # 1. Save draft into message input box using MTProto SaveDraft
+                draft_ok = await save_telegram_draft(c, chat_id, draft_text)
+                if draft_ok:
+                    logger.info(f"📝 [DRAFT SUCCESS!] Saved draft '{draft_text}' in input box for chat {chat_title} ({chat_id})!")
+
+                # 2. Send live report to owner in private chat (DM)
+                if telegram_app and telegram_app.bot and OWNER_ID != 0:
+                    try:
+                        await telegram_app.bot.send_message(
+                            chat_id=OWNER_ID,
+                            text=(
+                                f"🎴 **CARD SPAWN DETECTED & DRAFTED!** 🚨\n\n"
+                                f"• **Group Chat:** `{chat_title}` (`{chat_id}`)\n"
+                                f"• **Recruit Bot:** `@{sender_uname or 'target_bot'}`\n"
+                                f"• **Character Name:** `{char_name}`\n"
+                                f"• **Draft Set:** `{draft_text}` (Ready in input box!)"
+                            ),
+                            parse_mode='Markdown'
+                        )
+                        logger.info(f"📨 [DM NOTIFICATION SUCCESS] Sent spawn report to owner {OWNER_ID}")
+                    except Exception as dm_err:
+                        logger.error(f"❌ [DM NOTIFICATION ERROR] Could not send DM to OWNER_ID {OWNER_ID}: {dm_err}")
+
+            else:
+                logger.warning(f"⚠️ [PARSE NOTICE] Spawn detected in chat {chat_title}, but character name could not be extracted from: {text[:100]}")
+
+        except Exception as e:
+            logger.error(f"❌ Error in universal_drecruit_tracker: {e}")
 
             char_name = extract_character_name(text)
 
