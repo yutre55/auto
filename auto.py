@@ -436,25 +436,32 @@ def register_word_seek_handler(client: Client):
             except Exception:
                 pass
 
-    @client.on_message()
-    @client.on_edited_message()
+    @client.on_message(p_filters.group)
+    @client.on_edited_message(p_filters.group)
     async def universal_drecruit_tracker(c: Client, message: PMessage):
         try:
             if not message or not message.chat:
                 return
 
-            chat_id = message.chat.id
-            chat_title = message.chat.title or message.chat.first_name or f"Chat {chat_id}"
-            text = message.text or message.caption or ""
+            # STRICT RULE 1: ONLY Group Chats & Supergroups (IGNORE Private DM Chats & Bot DMs)
+            if message.chat.type not in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP]:
+                return
 
+            chat_id = message.chat.id
+            chat_title = message.chat.title or f"Group_{chat_id}"
+            text = (message.text or message.caption or "").strip()
+            if not text:
+                return
+
+            # Extract sender username & display name
             sender = message.from_user or message.sender_chat
             sender_uname = (sender.username or "").lower() if sender else ""
             sender_name = (getattr(sender, "first_name", None) or getattr(sender, "title", None) or "").lower() if sender else ""
 
-            # STRICT Target recruit bots ONLY
+            # Target recruit bots ONLY
             target_list = ["lookism_rec_bot", "gnejdjdjbot"]
 
-            # Also check drecruit_chats or custom settings
+            # Also check drecruit_chats custom settings if any
             d_info = db.get_drecruit_chat(chat_id)
             if d_info and d_info.get("target_bot"):
                 for b in d_info["target_bot"].split(","):
@@ -462,75 +469,38 @@ def register_word_seek_handler(client: Client):
                     if b_clean and b_clean not in target_list:
                         target_list.append(b_clean)
 
-            is_target_bot = any(
-                t in sender_uname
-                or t in sender_name
-                or t in text.lower()
+            # STRICT RULE 2: Sender MUST actually be one of the target bots!
+            is_target_sender = any(
+                t in sender_uname or t in sender_name
                 for t in target_list
             )
 
-            # Strictly ignore messages that are NOT from the target bots
-            if not is_target_bot:
+            if not is_target_sender:
                 return
 
-            if text:
-                logger.info(f"📥 [LIVE RECRUIT BOT MSG] Chat: '{chat_title}' ({chat_id}) | Sender: @{sender_uname} ({sender_name}) | Text: {text[:80]}")
+            logger.info(f"🎯 [RECRUIT BOT DROP IN GROUP] Group: '{chat_title}' ({chat_id}) | Sender: @{sender_uname} | Text: {text[:80]}")
 
             char_name = extract_character_name(text)
 
             if char_name:
                 draft_text = f"/recruit {char_name}"
 
-                # 1. Save draft into message input box using MTProto SaveDraft
+                # 1. Save draft into THIS GROUP CHAT's input box on the Userbot account
                 draft_ok = await save_telegram_draft(c, chat_id, draft_text)
                 if draft_ok:
-                    logger.info(f"📝 [DRAFT SUCCESS!] Saved draft '{draft_text}' in input box for chat {chat_title} ({chat_id})!")
+                    logger.info(f"📝 [DRAFT SUCCESS!] Saved '{draft_text}' in group input box for '{chat_title}' ({chat_id})!")
 
-                # 2. Send live report to owner in private chat (DM)
+                # 2. Send live report to owner in private chat (DM) for INFO ONLY
                 if telegram_app and telegram_app.bot and OWNER_ID != 0:
                     try:
                         await telegram_app.bot.send_message(
                             chat_id=OWNER_ID,
                             text=(
-                                f"🎴 **CARD SPAWN DETECTED & DRAFTED!** 🚨\n\n"
+                                f"🎴 **CARD SPAWN DETECTED IN GROUP!** 🚨\n\n"
                                 f"• **Group Chat:** `{chat_title}` (`{chat_id}`)\n"
                                 f"• **Recruit Bot:** `@{sender_uname or 'target_bot'}`\n"
                                 f"• **Character Name:** `{char_name}`\n"
-                                f"• **Draft Set:** `{draft_text}` (Ready in input box!)"
-                            ),
-                            parse_mode='Markdown'
-                        )
-                        logger.info(f"📨 [DM NOTIFICATION SUCCESS] Sent spawn report to owner {OWNER_ID}")
-                    except Exception as dm_err:
-                        logger.error(f"❌ [DM NOTIFICATION ERROR] Could not send DM to OWNER_ID {OWNER_ID}: {dm_err}")
-
-            else:
-                logger.warning(f"⚠️ [PARSE NOTICE] Spawn detected in chat {chat_title}, but character name could not be extracted from: {text[:100]}")
-
-        except Exception as e:
-            logger.error(f"❌ Error in universal_drecruit_tracker: {e}")
-
-            char_name = extract_character_name(text)
-
-            if char_name:
-                draft_text = f"/recruit {char_name}"
-
-                # 1. Save draft into message input box using MTProto SaveDraft
-                draft_ok = await save_telegram_draft(c, chat_id, draft_text)
-                if draft_ok:
-                    logger.info(f"📝 [DRAFT SUCCESS] Saved draft '{draft_text}' in input box for chat {chat_title} ({chat_id})!")
-
-                # 2. Send live report to owner in private chat (DM)
-                if telegram_app and telegram_app.bot and OWNER_ID != 0:
-                    try:
-                        await telegram_app.bot.send_message(
-                            chat_id=OWNER_ID,
-                            text=(
-                                f"🎴 **CARD SPAWN TRACKED & DRAFTED!** 🚨\n\n"
-                                f"• **Group Chat:** `{chat_title}` (`{chat_id}`)\n"
-                                f"• **Recruit Bot:** `@{sender_uname or 'target_bot'}`\n"
-                                f"• **Character Name:** `{char_name}`\n"
-                                f"• **Draft Set:** `{draft_text}` (Ready in input box!)"
+                                f"• **Draft Status:** `{draft_text}` set in group chat input box!"
                             ),
                             parse_mode='Markdown'
                         )
