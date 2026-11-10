@@ -38,43 +38,53 @@ from pyrogram.errors import SessionPasswordNeeded, PhoneCodeInvalid, PhoneCodeEx
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters as tg_filters, ContextTypes
 
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
+
 load_dotenv()
 
 def run_health_server():
     port = int(os.getenv("PORT", "10000"))
-    class HealthHandler(http.server.BaseHTTPRequestHandler):
+    class HealthHandler(BaseHTTPRequestHandler):
         def do_GET(self):
             self.send_response(200)
             self.send_header("Content-type", "text/plain")
+            self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
-            self.wfile.write(b"WordSeek Auto Bot is alive and running 24/7!")
+            self.wfile.write(b"OK - WordSeek Auto Bot is running 24/7")
         def log_message(self, format, *args):
             pass  # Suppress request log spam
 
     try:
-        with socketserver.TCPServer(("0.0.0.0", port), HealthHandler) as httpd:
-            print(f"🌐 Health check web server running on port {port}")
-            httpd.serve_forever()
+        server = ThreadingHTTPServer(("0.0.0.0", port), HealthHandler)
+        print(f"🌐 Health check HTTP server started on port {port}")
+
+        # Start self-ping keep-alive background thread to prevent Render free tier sleeping
+        def keep_alive_ping():
+            time.sleep(15)
+            target_urls = [f"http://127.0.0.1:{port}/"]
+            ext_url = os.getenv("RENDER_EXTERNAL_URL")
+            if ext_url:
+                if not ext_url.endswith("/"):
+                    ext_url += "/"
+                target_urls.append(ext_url)
+
+            while True:
+                for u in target_urls:
+                    try:
+                        req = urllib.request.Request(u, headers={"User-Agent": "WordSeekAutoBotKeepAlive/1.0"})
+                        with urllib.request.urlopen(req, timeout=10) as resp:
+                            pass
+                    except Exception:
+                        pass
+                time.sleep(240)  # Ping every 4 minutes
+
+        threading.Thread(target=keep_alive_ping, daemon=True).start()
+        server.serve_forever()
     except Exception as e:
         print(f"❌ Failed to start health server on port {port}: {e}")
 
 # Start health server immediately at module load time so Render detects the open port instantly
 threading.Thread(target=run_health_server, daemon=True).start()
-
-def keep_alive_ping():
-    port = int(os.getenv("PORT", "10000"))
-    time.sleep(20)
-    target_url = f"http://127.0.0.1:{port}/"
-    while True:
-        try:
-            req = urllib.request.Request(target_url, headers={"User-Agent": "WordSeekAutoBotKeepAlive/1.0"})
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                pass
-        except Exception:
-            pass
-        time.sleep(240)  # Ping every 4 minutes to prevent Render 15-min sleep
-
-threading.Thread(target=keep_alive_ping, daemon=True).start()
 
 # Logging setup
 logging.basicConfig(
