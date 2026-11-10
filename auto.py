@@ -90,8 +90,8 @@ def escape_html(text: str) -> str:
 
 API_ID = int(os.getenv("API_ID", "24967812"))
 API_HASH = os.getenv("API_HASH", "1319741088339b33a579bb8cb2e9c8ec")
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8641208496:AAHg-3wEKC4ogsymjHecCL6hy7sPvGbml0Q")
-OWNER_ID = int(os.getenv("OWNER_ID", "5193216992"))
+BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "auto_wordbot.db")
 
