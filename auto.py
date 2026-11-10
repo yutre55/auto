@@ -220,6 +220,12 @@ class AutoWordDatabase:
                 )
             """)
             cursor.execute("""
+                CREATE TABLE IF NOT EXISTS photo_cache (
+                    file_unique_id TEXT PRIMARY KEY,
+                    char_name TEXT
+                )
+            """)
+            cursor.execute("""
                 CREATE TABLE IF NOT EXISTS stats (
                     id INTEGER PRIMARY KEY CHECK (id = 1),
                     total_words INTEGER DEFAULT 0,
@@ -230,6 +236,31 @@ class AutoWordDatabase:
             cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('target_bots', '@Lookism_rec_bot, @Gnejdjdjbot')")
             conn.commit()
             conn.close()
+
+    def cache_char_name(self, file_unique_id: str, char_name: str):
+        if not file_unique_id or not char_name:
+            return
+        with self._lock:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO photo_cache (file_unique_id, char_name)
+                VALUES (?, ?)
+                ON CONFLICT(file_unique_id) DO UPDATE SET char_name = excluded.char_name
+            """, (file_unique_id, char_name))
+            conn.commit()
+            conn.close()
+
+    def get_cached_char_name(self, file_unique_id: str) -> Optional[str]:
+        if not file_unique_id:
+            return None
+        with self._lock:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute("SELECT char_name FROM photo_cache WHERE file_unique_id = ?", (file_unique_id,))
+            row = cursor.fetchone()
+            conn.close()
+            return row[0] if row else None
 
     def set_drecruit_enabled(self, chat_id: int, chat_title: str, target_bot: str = '@Lookism_rec_bot', is_enabled: int = 1):
         with self._lock:
@@ -360,31 +391,51 @@ userbot: Optional[Client] = None
 telegram_app: Optional[Application] = None
 user_states: Dict[int, dict] = {}
 
-def extract_character_name(text: str) -> str:
+def extract_character_name(message_or_text) -> str:
+    text = ""
+    message = None
+    if hasattr(message_or_text, "text") or hasattr(message_or_text, "caption") or hasattr(message_or_text, "reply_markup"):
+        message = message_or_text
+        text = (getattr(message, "text", None) or getattr(message, "caption", None) or "").strip()
+    elif isinstance(message_or_text, str):
+        text = message_or_text
+
+    # 1. Check Inline Keyboard buttons text or callback data instantly in milliseconds
+    if message and hasattr(message, "reply_markup") and message.reply_markup and hasattr(message.reply_markup, "inline_keyboard"):
+        for row in message.reply_markup.inline_keyboard:
+            for btn in row:
+                btn_text = getattr(btn, "text", "") or ""
+                btn_data = getattr(btn, "callback_data", "") or ""
+                for source_str in [btn_text, btn_data]:
+                    m_btn = re.search(r"(?:recruit|claim|grab|char)[:\s_]+([A-Za-z0-9\s'&-]+)", source_str, re.IGNORECASE)
+                    if m_btn:
+                        val = m_btn.group(1).strip()
+                        if val and len(val) < 50:
+                            return val
+
     if not text:
         return ""
 
     text_clean = text.replace("*", "").replace("`", "").replace("_", "").replace("~", "")
 
-    # 1. Regex pattern: Name: <Name>
-    m1 = re.search(r"Name:\s*([^\n\r]+?)(?:\s+Code:|\s+Tier:|\s+Worth:|\n|\r|$)", text_clean, re.IGNORECASE)
-    if m1:
-        val = m1.group(1).strip()
-        if "code:" in val.lower():
-            val = val.split("Code:")[0].split("code:")[0].strip()
+    # Pattern A: "recruit <Character Name> has appeared" (Used by @Gnejdjdjbot & drop bots!)
+    mA = re.search(r"recruit\s+([A-Za-z0-9\s'&-]+?)\s+has\s+appeared", text_clean, re.IGNORECASE)
+    if mA:
+        val = mA.group(1).strip()
         if val and len(val) < 50:
             return val
 
-    # 2. Regex pattern: Character: <Name>
-    m2 = re.search(r"Character:\s*([^\n\r]+?)(?:\s+Code:|\s+Tier:|\s+Worth:|\n|\r|$)", text_clean, re.IGNORECASE)
-    if m2:
-        val = m2.group(1).strip()
-        if "code:" in val.lower():
-            val = val.split("Code:")[0].split("code:")[0].strip()
+    # Pattern B: "Name: <Name>" or "Character: <Name>"
+    mB = re.search(r"(?:name|character|char)[:\s]+([^\n\r]+?)(?:\s+code:|\s+tier:|\s+worth:|\n|\r|$)", text_clean, re.IGNORECASE)
+    if mB:
+        val = mB.group(1).strip()
+        for stop in ["code:", "Code:", "tier:", "Tier:", "worth:", "Worth:"]:
+            if stop in val:
+                val = val.split(stop)[0].strip()
         if val and len(val) < 50:
             return val
 
-    # 3. Line scan
+    # Pattern C: Line scan
     for line in text_clean.split("\n"):
         line_s = line.strip()
         if line_s.lower().startswith("name:") or line_s.lower().startswith("character:"):
@@ -398,6 +449,9 @@ def extract_character_name(text: str) -> str:
                     return val
 
     return ""
+
+active_recruits_per_chat: Dict[int, float] = {}  # chat_id -> drop timestamp
+last_drop_photo_id_per_chat: Dict[int, str] = {}  # chat_id -> file_unique_id
 
 def register_word_seek_handler(client: Client):
     @client.on_message(p_filters.me & p_filters.group)
@@ -443,15 +497,14 @@ def register_word_seek_handler(client: Client):
             if not message or not message.chat:
                 return
 
-            # STRICT RULE 1: ONLY Group Chats & Supergroups (IGNORE Private DM Chats & Bot DMs)
+            # STRICT RULE 1: ONLY Group Chats & Supergroups
             if message.chat.type not in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP]:
                 return
 
             chat_id = message.chat.id
             chat_title = message.chat.title or f"Group_{chat_id}"
             text = (message.text or message.caption or "").strip()
-            if not text:
-                return
+            now = time.time()
 
             # Extract sender username & display name
             sender = message.from_user or message.sender_chat
@@ -469,47 +522,202 @@ def register_word_seek_handler(client: Client):
                     if b_clean and b_clean not in target_list:
                         target_list.append(b_clean)
 
-            # STRICT RULE 2: Sender MUST actually be one of the target bots!
             is_target_sender = any(
                 t in sender_uname or t in sender_name
                 for t in target_list
             )
 
-            if not is_target_sender:
-                return
+            text_lower = text.lower()
 
-            logger.info(f"🎯 [RECRUIT BOT DROP IN GROUP] Group: '{chat_title}' ({chat_id}) | Sender: @{sender_uname} | Text: {text[:80]}")
+            # -------------------------------------------------------------
+            # CASE 1: CARD RECRUITED / CLAIMED ("in your crew now")
+            # -------------------------------------------------------------
+            if is_target_sender and any(kw in text_lower for kw in ["in your crew", "crew now", "walked off", "too late"]):
+                logger.info(f"🛑 [CARD RECRUITED/EXPIRED] In group '{chat_title}' ({chat_id})!")
+                active_recruits_per_chat.pop(chat_id, None)
 
-            char_name = extract_character_name(text)
+                # Clear draft from input box so user doesn't send old command
+                try:
+                    await save_telegram_draft(c, chat_id, "")
+                    logger.info(f"🧹 [DRAFT CLEARED] Input box draft cleared for '{chat_title}'")
+                except Exception:
+                    pass
 
-            if char_name:
-                draft_text = f"/recruit {char_name}"
+                char_name = extract_character_name(message)
 
-                # 1. Save draft into THIS GROUP CHAT's input box on the Userbot account
-                draft_ok = await save_telegram_draft(c, chat_id, draft_text)
-                if draft_ok:
-                    logger.info(f"📝 [DRAFT SUCCESS!] Saved '{draft_text}' in group input box for '{chat_title}' ({chat_id})!")
+                # AUTO-LEARN & CACHE THIS PHOTO -> CHARACTER NAME MAPPING!
+                photo_id = last_drop_photo_id_per_chat.get(chat_id)
+                if photo_id and char_name:
+                    db.cache_char_name(photo_id, char_name)
+                    logger.info(f"🧠 [AUTO-LEARN CACHE SUCCESS!] Learned photo {photo_id} -> '{char_name}' for future drops!")
 
-                # 2. Send live report to owner in private chat (DM) for INFO ONLY
                 if telegram_app and telegram_app.bot and OWNER_ID != 0:
                     try:
                         await telegram_app.bot.send_message(
                             chat_id=OWNER_ID,
                             text=(
-                                f"🎴 **CARD SPAWN DETECTED IN GROUP!** 🚨\n\n"
+                                f"🛑 **CARD RECRUITED / CLAIMED BY ANOTHER PLAYER!**\n\n"
                                 f"• **Group Chat:** `{chat_title}` (`{chat_id}`)\n"
-                                f"• **Recruit Bot:** `@{sender_uname or 'target_bot'}`\n"
-                                f"• **Character Name:** `{char_name}`\n"
-                                f"• **Draft Status:** `{draft_text}` set in group chat input box!"
+                                f"• **Character Name:** `{char_name or 'Card'}`\n"
+                                f"• **Action:** Group chat draft cleared & auto-learned! 🧠🧹"
                             ),
                             parse_mode='Markdown'
                         )
-                        logger.info(f"📨 [DM NOTIFICATION SUCCESS] Sent spawn report to owner {OWNER_ID}")
-                    except Exception as dm_err:
-                        logger.error(f"❌ [DM NOTIFICATION ERROR] Could not send DM to OWNER_ID {OWNER_ID}: {dm_err}")
+                    except Exception:
+                        pass
+                return
 
-            else:
-                logger.warning(f"⚠️ [PARSE NOTICE] Spawn detected in chat {chat_title}, but character name could not be extracted from: {text[:100]}")
+            # -------------------------------------------------------------
+            # CASE 2: NEW CARD DROP APPEARED (Image / Photo or Keywords)
+            # -------------------------------------------------------------
+            is_card_drop_msg = is_target_sender and (
+                bool(message.photo) or
+                any(kw in text_lower for kw in ["recruit has appeared", "has appeared", "appeared...", "spawn", "drop", "card", "recruit"])
+            )
+
+            if is_card_drop_msg:
+                active_recruits_per_chat[chat_id] = now
+                logger.info(f"🚨 [NEW CARD DROP DETECTED WITH IMAGE/TEXT!] In group '{chat_title}' ({chat_id})")
+
+                char_name = extract_character_name(message)
+
+                # Check Photo Cache if photo present and char_name not in caption
+                if not char_name and message.photo:
+                    file_unique_id = message.photo.file_unique_id
+                    last_drop_photo_id_per_chat[chat_id] = file_unique_id
+                    cached_char = db.get_cached_char_name(file_unique_id)
+                    if cached_char:
+                        char_name = cached_char
+                        logger.info(f"⚡ [PHOTO CACHE HIT!] Instantly recognized cached character '{char_name}' for photo {file_unique_id}!")
+
+                if char_name:
+                    draft_text = f"/recruit {char_name}"
+                    draft_ok = await save_telegram_draft(c, chat_id, draft_text)
+                    if draft_ok:
+                        logger.info(f"📝 [DRAFT SUCCESS!] Saved '{draft_text}' in group input box for '{chat_title}'!")
+
+                    if telegram_app and telegram_app.bot and OWNER_ID != 0:
+                        try:
+                            await telegram_app.bot.send_message(
+                                chat_id=OWNER_ID,
+                                text=(
+                                    f"🎴 **NEW CARD SPAWN & IMAGE DETECTED & DRAFTED!** 🚨\n\n"
+                                    f"• **Group Chat:** `{chat_title}` (`{chat_id}`)\n"
+                                    f"• **Character Name:** `{char_name}`\n"
+                                    f"• **Draft Set:** `{draft_text}` (Ready in group chat input box!)"
+                                ),
+                                parse_mode='Markdown'
+                            )
+                        except Exception:
+                            pass
+                else:
+                    if message.photo:
+                        file_unique_id = message.photo.file_unique_id
+                        last_drop_photo_id_per_chat[chat_id] = file_unique_id
+                        await save_telegram_draft(c, chat_id, "/recruit ")
+                    if telegram_app and telegram_app.bot and OWNER_ID != 0:
+                        try:
+                            await telegram_app.bot.send_message(
+                                chat_id=OWNER_ID,
+                                text=(
+                                    f"🎴 **NEW CARD IMAGE DROP DETECTED IN GROUP!** 🚨\n\n"
+                                    f"• **Group Chat:** `{chat_title}` (`{chat_id}`)\n"
+                                    f"• **Status:** Card image appeared! Type name/guess in group to auto-learn and draft instantly..."
+                                ),
+                                parse_mode='Markdown'
+                            )
+                        except Exception:
+                            pass
+                return
+
+            # -------------------------------------------------------------
+            # CASE 3: NAME GUESS / RECRUIT COMMAND IN GROUP WHILE DROP IS ACTIVE
+            # -------------------------------------------------------------
+            last_drop_time = active_recruits_per_chat.get(chat_id, 0.0)
+            is_drop_active = (now - last_drop_time < 600)  # Active within 10 mins
+
+            if is_drop_active:
+                captured_name = ""
+
+                # If user or bot typed /recruit <name>
+                if text_lower.startswith("/recruit ") or text_lower.startswith("/claim ") or text_lower.startswith("/grab "):
+                    parts = text.split(maxsplit=1)
+                    if len(parts) > 1:
+                        captured_name = parts[1].strip()
+
+                # Or if message contains "Name: <name>"
+                elif "name:" in text_lower or "character:" in text_lower:
+                    captured_name = extract_character_name(message)
+
+                if captured_name and len(captured_name) < 50:
+                    draft_text = f"/recruit {captured_name}"
+                    draft_ok = await save_telegram_draft(c, chat_id, draft_text)
+                    if draft_ok:
+                        logger.info(f"📝 [DRAFT CAPTURED FROM CHAT GUESS!] Saved '{draft_text}' in group input box for '{chat_title}'!")
+
+                    # Also cache photo if we have one for this chat
+                    photo_id = last_drop_photo_id_per_chat.get(chat_id)
+                    if photo_id:
+                        db.cache_char_name(photo_id, captured_name)
+                        logger.info(f"🧠 [AUTO-LEARN CACHE FROM GUESS] Learned photo {photo_id} -> '{captured_name}'!")
+
+                    if telegram_app and telegram_app.bot and OWNER_ID != 0:
+                        try:
+                            await telegram_app.bot.send_message(
+                                chat_id=OWNER_ID,
+                                text=(
+                                    f"⚡ **CHARACTER NAME CAPTURED FROM CHAT!** 🎯\n\n"
+                                    f"• **Group Chat:** `{chat_title}` (`{chat_id}`)\n"
+                                    f"• **Character Name:** `{captured_name}`\n"
+                                    f"• **Draft Set:** `{draft_text}` (Ready in group chat input box!)"
+                                ),
+                                parse_mode='Markdown'
+                            )
+                        except Exception:
+                            pass
+
+        except Exception as e:
+            logger.error(f"❌ Error in universal_drecruit_tracker: {e}")
+
+            # -------------------------------------------------------------
+            # CASE 3: NAME GUESS / RECRUIT COMMAND IN GROUP WHILE DROP IS ACTIVE
+            # -------------------------------------------------------------
+            last_drop_time = active_recruits_per_chat.get(chat_id, 0.0)
+            is_drop_active = (now - last_drop_time < 600)  # Active within 10 mins
+
+            if is_drop_active:
+                captured_name = ""
+
+                # If user or bot typed /recruit <name>
+                if text_lower.startswith("/recruit ") or text_lower.startswith("/claim ") or text_lower.startswith("/grab "):
+                    parts = text.split(maxsplit=1)
+                    if len(parts) > 1:
+                        captured_name = parts[1].strip()
+
+                # Or if message contains "Name: <name>"
+                elif "name:" in text_lower or "character:" in text_lower:
+                    captured_name = extract_character_name(text)
+
+                if captured_name and len(captured_name) < 50:
+                    draft_text = f"/recruit {captured_name}"
+                    draft_ok = await save_telegram_draft(c, chat_id, draft_text)
+                    if draft_ok:
+                        logger.info(f"📝 [DRAFT CAPTURED FROM CHAT GUESS!] Saved '{draft_text}' in group input box for '{chat_title}'!")
+
+                    if telegram_app and telegram_app.bot and OWNER_ID != 0:
+                        try:
+                            await telegram_app.bot.send_message(
+                                chat_id=OWNER_ID,
+                                text=(
+                                    f"⚡ **CHARACTER NAME CAPTURED FROM CHAT!** 🎯\n\n"
+                                    f"• **Group Chat:** `{chat_title}` (`{chat_id}`)\n"
+                                    f"• **Character Name:** `{captured_name}`\n"
+                                    f"• **Draft Set:** `{draft_text}` (Ready in group chat input box!)"
+                                ),
+                                parse_mode='Markdown'
+                            )
+                        except Exception:
+                            pass
 
         except Exception as e:
             logger.error(f"❌ Error in universal_drecruit_tracker: {e}")
