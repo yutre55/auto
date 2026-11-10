@@ -368,7 +368,7 @@ async def process_word_seek_response(client: Client, chat_id: int, text: str):
         return
 
     # 2. Restart on completion / win / game over / game ended / the word was
-    if any(kw in text_lower for kw in ["congratulations", "completed", "game over", "won!", "game ended", "start a new game", "the word was"]):
+    if any(kw in text_lower for kw in ["congratulations", "congrats!", "guessed it correctly", "completed", "game over", "won!", "game ended", "start a new game", "the word was", "added", "leaderboard"]):
         db.increment_stats(chat_id, solved_word=True, completed_game=True)
         logger.info(f"🏆 Game ended in {chat_id}! Resetting used words and restarting /{game_mode}...")
         used_words_per_chat[chat_id] = set()
@@ -587,9 +587,16 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• `/mode 4` - Set game mode to 4-letter (`/new4`).\n"
         "• `/mode 5` - Set game mode to 5-letter (`/new5`).\n"
         "• `/chats` - View all group chats your userbot is joined in.\n"
+        "• `/ping` - Check if bot is alive and responding.\n"
         "• `/stats` - View total words guessed & games completed."
     )
     await update.message.reply_text(text, parse_mode='Markdown')
+
+async def cmd_ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if OWNER_ID != 0 and user.id != OWNER_ID:
+        return
+    await update.message.reply_text("🏓 **Pong!** Bot is alive, active, and running 24/7! 🟢", parse_mode='Markdown')
 
 async def cmd_addacc(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -1033,6 +1040,7 @@ async def main():
         clear_telegram_webhook(BOT_TOKEN)
 
         telegram_app.add_handler(CommandHandler(["start", "help"], cmd_start))
+        telegram_app.add_handler(CommandHandler("ping", cmd_ping))
         telegram_app.add_handler(CommandHandler("addacc", cmd_addacc))
         telegram_app.add_handler(CommandHandler("addsession", cmd_addsession))
         telegram_app.add_handler(CommandHandler("autoplay", cmd_autoplay))
