@@ -1647,9 +1647,9 @@ async def handle_private_states(update: Update, context: ContextTypes.DEFAULT_TY
         )
 
     elif step == "waiting_for_card_message":
-        target_msg = update.message
-        msg_text = (target_msg.text or target_msg.caption or "").strip()
-        photo = target_msg.photo
+        target_msg = update.message.reply_to_message if update.message.reply_to_message else update.message
+        msg_text = (target_msg.text or target_msg.caption or update.message.text or update.message.caption or "").strip()
+        photo = target_msg.photo or update.message.photo
 
         if not msg_text and not photo:
             await update.message.reply_text("⚠️ Kripya valid card photo aur details forward/upload karein (ya `/cancel` type karein).")
