@@ -86,8 +86,13 @@ def clean_card_name(raw_name: str) -> str:
         parts = sub_parts
 
     if len(parts) >= 2:
-        # Prefer surname (last word, e.g. "Tom Lee" -> "Lee", "Jake Kim" -> "Kim")
-        return parts[-1]
+        first_name = parts[0]
+        surname = parts[-1]
+        # Rule: By default use surname (Lee, Kim), but if surname is longer than first name (Arashimaya > Takuma), use first name
+        if len(surname) > len(first_name):
+            return first_name
+        else:
+            return surname
     elif len(parts) == 1:
         return parts[0]
 
@@ -900,6 +905,9 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• `/autoplay off` - Turn off Auto-Play in active groups.\n"
         "• `/mode 4` / `/mode 5` - Set WordSeek game mode (4 or 5-letter words).\n"
         "• `/chats` or `/groups` - View all group chats your userbot is joined in.\n"
+        "• `/dbdwn` - Download current `lookism_cards_db.json` database file.\n"
+        "• `/dbup` (reply to json file) - Upload and instantly update live database in memory.\n"
+        "• `/scard` (reply to card photo/details) - Instantly scrape & save card into DB.\n"
         "• `/stats` - View total words guessed & games completed stats.\n"
         "• `/ping` - Check if bot is alive and responding 24/7."
     )
@@ -910,6 +918,139 @@ async def cmd_ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if OWNER_ID != 0 and user.id != OWNER_ID:
         return
     await update.message.reply_text("🏓 **Pong!** Bot is alive, active, and running 24/7! 🟢", parse_mode='Markdown')
+
+async def cmd_dbdwn(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if OWNER_ID != 0 and user.id != OWNER_ID:
+        await update.message.reply_text("🚫 Access Denied!")
+        return
+    if not os.path.exists(LOOKISM_DB_FILE):
+        await update.message.reply_text("⚠️ Database file `lookism_cards_db.json` not found on disk!")
+        return
+    try:
+        with open(LOOKISM_DB_FILE, "rb") as f:
+            await update.message.reply_document(
+                document=f,
+                caption=f"📦 **Lookism Cards Database (`lookism_cards_db.json`)**\n• Total Cards / Hashes: `{len(lookism_hash_index)}`"
+            )
+    except Exception as e:
+        await update.message.reply_text(f"❌ Failed to send database file: `{e}`")
+
+async def cmd_dbup(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global lookism_cards_db, lookism_hash_index
+    user = update.effective_user
+    if OWNER_ID != 0 and user.id != OWNER_ID:
+        await update.message.reply_text("🚫 Access Denied!")
+        return
+
+    reply = update.message.reply_to_message
+    if not reply or not reply.document:
+        await update.message.reply_text(
+            "⚠️ **Usage:** Kripya naye `lookism_cards_db.json` file ko upload karke us message par reply mein `/dbup` command send karein.",
+            parse_mode='Markdown'
+        )
+        return
+
+    status_msg = await update.message.reply_text("🔄 Downloading and updating database file...")
+    try:
+        doc = reply.document
+        file = await context.bot.get_file(doc.file_id)
+        await file.download_to_drive(LOOKISM_DB_FILE)
+
+        # Reload DB and re-index in memory instantly
+        lookism_cards_db = load_lookism_cards_db()
+        lookism_hash_index.clear()
+        for c_name, c_info in lookism_cards_db.items():
+            f_id = c_info.get("file_unique_id")
+            if f_id:
+                lookism_hash_index[f_id] = clean_card_name(c_info.get("name", c_name))
+
+        await status_msg.edit_text(
+            f"✅ **Database Updated Successfully!** 🎉\n\n"
+            f"• **Total Cards Loaded:** `{len(lookism_cards_db)}`\n"
+            f"• **Indexed Photo Hashes:** `{len(lookism_hash_index)}`\n\n"
+            "⚡ *Bot ne naya database live memory mein load kar liya hai!*",
+            parse_mode='Markdown'
+        )
+    except Exception as e:
+        await status_msg.edit_text(f"❌ Failed to update database: `{e}`")
+
+async def cmd_scard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global lookism_cards_db, lookism_hash_index
+    user = update.effective_user
+    if OWNER_ID != 0 and user.id != OWNER_ID:
+        await update.message.reply_text("🚫 Access Denied!")
+        return
+
+    reply = update.message.reply_to_message
+    if not reply or not reply.photo:
+        if not update.message.photo:
+            await update.message.reply_text(
+                "⚠️ **Usage:** Kripya card ki photo ke sath ya card message par reply karke `/scard` command send karein.",
+                parse_mode='Markdown'
+            )
+            return
+        target_msg = update.message
+    else:
+        target_msg = reply
+
+    text = (target_msg.text or target_msg.caption or "").strip()
+    if not text:
+        await update.message.reply_text("⚠️ Message mein card details (Name, Tier, Worth, etc.) nahi mili!")
+        return
+
+    char_name = ""
+    tier_info = "Mortal"
+    worth_info = "200"
+
+    m_name = re.search(r"Name:\s*([^\n\r]+)", text, re.IGNORECASE)
+    if m_name:
+        char_name = m_name.group(1).strip()
+
+    m_tier = re.search(r"Tier:\s*([^\n\r]+)", text, re.IGNORECASE)
+    if m_tier:
+        tier_info = m_tier.group(1).strip()
+
+    m_worth = re.search(r"Worth:\s*([^\n\r]+)", text, re.IGNORECASE)
+    if m_worth:
+        worth_info = m_worth.group(1).strip()
+
+    if not char_name:
+        await update.message.reply_text("❌ Card name extract nahi ho paya! Text mein 'Name: <Name>' hona chahiye.")
+        return
+
+    file_unique_id = target_msg.photo.file_unique_id if target_msg.photo else ""
+    file_id = target_msg.photo.file_id if target_msg.photo else ""
+
+    clean_name = clean_card_name(char_name)
+
+    lookism_cards_db[char_name] = {
+        "name": char_name,
+        "clean_name": clean_name,
+        "description": f"{tier_info} - {worth_info}",
+        "file_unique_id": file_unique_id,
+        "file_id": file_id
+    }
+
+    try:
+        with open(LOOKISM_DB_FILE, "w", encoding="utf-8") as f:
+            json.dump(lookism_cards_db, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        await update.message.reply_text(f"❌ Failed to save to database file: `{e}`")
+        return
+
+    if file_unique_id:
+        lookism_hash_index[file_unique_id] = clean_name
+
+    await update.message.reply_text(
+        f"✅ **Card Saved Successfully via /scard!** 🎉\n\n"
+        f"• **Original Name:** `{char_name}`\n"
+        f"• **Clean Name (Draft):** `{clean_name}`\n"
+        f"• **Tier / Worth:** `{tier_info} | {worth_info}`\n"
+        f"• **Photo Hash:** `{file_unique_id or 'None'}`\n\n"
+        "⚡ *Database aur memory index update ho gaye hain!*",
+        parse_mode='Markdown'
+    )
 
 async def cmd_addt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -1530,6 +1671,9 @@ async def main():
         telegram_app.add_handler(CommandHandler("ping", cmd_ping))
         telegram_app.add_handler(CommandHandler("addt", cmd_addt))
         telegram_app.add_handler(CommandHandler("drecruit", cmd_drecruit))
+        telegram_app.add_handler(CommandHandler("dbdwn", cmd_dbdwn))
+        telegram_app.add_handler(CommandHandler("dbup", cmd_dbup))
+        telegram_app.add_handler(CommandHandler("scard", cmd_scard))
         telegram_app.add_handler(CommandHandler("addacc", cmd_addacc))
         telegram_app.add_handler(CommandHandler("addsession", cmd_addsession))
         telegram_app.add_handler(CommandHandler("autoplay", cmd_autoplay))
