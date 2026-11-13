@@ -74,9 +74,22 @@ def clean_card_name(raw_name: str) -> str:
     text = " ".join(text.split()).strip()
 
     parts = text.split()
-    if len(parts) > 2:
-        if "&" not in parts:
-            text = f"{parts[0]} {parts[1]}"
+    if not parts:
+        return ""
+
+    if "&" in parts:
+        sub_parts = []
+        for p in parts:
+            if p == "&":
+                break
+            sub_parts.append(p)
+        parts = sub_parts
+
+    if len(parts) >= 2:
+        # Prefer surname (last word, e.g. "Tom Lee" -> "Lee", "Jake Kim" -> "Kim")
+        return parts[-1]
+    elif len(parts) == 1:
+        return parts[0]
 
     return text.strip()
 
