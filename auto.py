@@ -924,6 +924,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• `/start` or `/help` - Show this main dashboard and command list.\n"
         "• `/addacc` - Interactively login with Phone Number & OTP.\n"
         "• `/addsession <string>` - Directly link account using Pyrogram Session String.\n"
+        "• `/getst` - Generate Pyrogram Session String for any Telegram account interactively.\n"
         "• `/drecruit` - Interactive wizard to enable/disable DRecruit (Auto-Draft Sniper) in GCs.\n"
         "• `/drecruit off` - Turn off DRecruit in active groups.\n"
         "• `/addt <bot>` - Set target recruit bot username (e.g. `@Lookism_rec_bot`).\n"
@@ -933,8 +934,6 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• `/chats` or `/groups` - View all group chats your userbot is joined in.\n"
         "• `/dbdwn` - Download current `lookism_cards_db.json` database file.\n"
         "• `/dbup` (reply to json file) - Upload and instantly update live database in memory.\n"
-        "• `/scard` - Save/add a new card to DB.\n"
-        "• `/dcard <name>` - Delete a card from DB by name.\n"
         "• `/cancel` - Cancel any active interactive wizard.\n"
         "• `/stats` - View total words guessed & games completed stats.\n"
         "• `/ping` - Check if bot is alive and responding 24/7."
@@ -946,6 +945,23 @@ async def cmd_ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if OWNER_ID != 0 and user.id != OWNER_ID:
         return
     await update.message.reply_text("🏓 **Pong!** Bot is alive, active, and running 24/7! 🟢", parse_mode='Markdown')
+
+async def cmd_getst(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if OWNER_ID != 0 and user.id != OWNER_ID:
+        await update.message.reply_text("🚫 Access Denied!")
+        return
+    if update.message.chat.type != 'private':
+        await update.message.reply_text("⚠️ Kripya `/getst` command bot ke **Private Chat** mein use karein.")
+        return
+
+    user_states[user.id] = {"step": "waiting_getst_phone"}
+    await update.message.reply_text(
+        "📱 **Pyrogram Session String Generator Wizard** 🔑\n\n"
+        "Kripya us account ka **Phone Number** country code ke sath send karein jiska session string nikalna hai (e.g. `+919876543210`):\n\n"
+        "👉 *Agar cancel karna ho toh `/cancel` send karein:*",
+        parse_mode='Markdown'
+    )
 
 async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -1042,161 +1058,6 @@ async def cmd_dbup(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     except Exception as e:
         await status_msg.edit_text(f"❌ Failed to update database: `{e}`")
-
-async def cmd_scard(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global lookism_cards_db, lookism_hash_index
-    user = update.effective_user
-    if OWNER_ID != 0 and user.id != OWNER_ID:
-        await update.message.reply_text("🚫 Access Denied!")
-        return
-
-    reply = update.message.reply_to_message
-
-    # Extract text from replied message first, else current message
-    text = ""
-    if reply:
-        text = (reply.caption or reply.text or "").strip()
-    if not text:
-        text = (update.message.caption or update.message.text or "").strip()
-        text = text.replace("/scard", "").strip()
-
-    # Extract photo from replied message first, else current message
-    photo = None
-    if reply and reply.photo:
-        photo = reply.photo
-    elif update.message.photo:
-        photo = update.message.photo
-
-    p_obj = None
-    if photo:
-        p_obj = photo[-1] if isinstance(photo, list) else photo
-
-    if not text and not p_obj:
-        await update.message.reply_text(
-            "⚠️ **Card details nahi mili!**\n\n"
-            "Kripya card message par reply karke `/scard` bhein, ya card photo ke sath caption mein details bhein.",
-            parse_mode='Markdown'
-        )
-        return
-
-    char_name = ""
-    tier_info = "Mortal"
-    worth_info = "200"
-
-    m_name = re.search(r"Name:\s*([^\n\r]+)", text, re.IGNORECASE)
-    if m_name:
-        char_name = m_name.group(1).strip()
-
-    m_tier = re.search(r"Tier:\s*([^\n\r]+)", text, re.IGNORECASE)
-    if m_tier:
-        tier_info = m_tier.group(1).strip()
-
-    m_worth = re.search(r"Worth:\s*([^\n\r]+)", text, re.IGNORECASE)
-    if m_worth:
-        worth_info = m_worth.group(1).strip()
-
-    if not char_name:
-        await update.message.reply_text(
-            f"❌ **Card name extract nahi ho paya!**\n"
-            f"Text mein `Name: <Name>` hona zaroori hai.\n\n"
-            f"📄 **Received Text:**\n`{text}`",
-            parse_mode='Markdown'
-        )
-        return
-
-    file_unique_id = getattr(p_obj, "file_unique_id", "") if p_obj else ""
-    file_id = getattr(p_obj, "file_id", "") if p_obj else ""
-
-    clean_name = clean_card_name(char_name)
-
-    # Load fresh DB from disk so we NEVER overwrite or delete old cards!
-    lookism_cards_db = load_lookism_cards_db()
-
-    lookism_cards_db[char_name] = {
-        "name": char_name,
-        "clean_name": clean_name,
-        "description": f"{tier_info} - {worth_info}",
-        "file_unique_id": file_unique_id,
-        "file_id": file_id
-    }
-
-    try:
-        with open(LOOKISM_DB_FILE, "w", encoding="utf-8") as f:
-            json.dump(lookism_cards_db, f, indent=2, ensure_ascii=False)
-    except Exception as e:
-        await update.message.reply_text(f"❌ Failed to save database file: `{e}`")
-        return
-
-    # Re-index RAM memory instantly
-    lookism_hash_index.clear()
-    for c_name, c_info in lookism_cards_db.items():
-        f_id = c_info.get("file_unique_id")
-        if f_id:
-            lookism_hash_index[f_id] = clean_card_name(c_info.get("name", c_name))
-
-    await update.message.reply_text(
-        f"✅ **Card Added Successfully to Database!** 🎉\n\n"
-        f"• **Original Name:** `{char_name}`\n"
-        f"• **Draft Name (Clean):** `{clean_name}` 🎯\n"
-        f"• **Tier / Worth:** `{tier_info} | {worth_info}`\n"
-        f"• **Photo Unique ID:** `{file_unique_id or 'None'}`\n\n"
-        f"📊 *Total Cards in DB:* `{len(lookism_cards_db)}`",
-        parse_mode='Markdown'
-    )
-
-async def cmd_dcard(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global lookism_cards_db, lookism_hash_index
-    user = update.effective_user
-    if OWNER_ID != 0 and user.id != OWNER_ID:
-        await update.message.reply_text("🚫 Access Denied!")
-        return
-
-    args = context.args
-    if not args:
-        await update.message.reply_text(
-            "⚠️ **Usage:** `/dcard <card_name>`\n\n"
-            "Aap database se kisi bhi card ko uske naam se delete kar sakte hain (e.g., `/dcard Yeonwoo` ya `/dcard Takuma`).",
-            parse_mode='Markdown'
-        )
-        return
-
-    query = " ".join(args).strip().lower()
-    lookism_cards_db = load_lookism_cards_db()
-
-    found_key = None
-    for k, v in lookism_cards_db.items():
-        orig_name = k.lower()
-        clean_n = v.get("clean_name", "").lower()
-        db_name = v.get("name", "").lower()
-        if query == orig_name or query == clean_n or query == db_name or query in orig_name or query in clean_n:
-            found_key = k
-            break
-
-    if not found_key:
-        await update.message.reply_text(f"❌ Card matching `{query}` database mein nahi mila!")
-        return
-
-    deleted_card = lookism_cards_db.pop(found_key)
-
-    try:
-        with open(LOOKISM_DB_FILE, "w", encoding="utf-8") as f:
-            json.dump(lookism_cards_db, f, indent=2, ensure_ascii=False)
-    except Exception as e:
-        await update.message.reply_text(f"❌ Failed to save database file: `{e}`")
-        return
-
-    lookism_hash_index.clear()
-    for c_name, c_info in lookism_cards_db.items():
-        f_id = c_info.get("file_unique_id")
-        if f_id:
-            lookism_hash_index[f_id] = clean_card_name(c_info.get("name", c_info.get("clean_name", c_name)))
-
-    await update.message.reply_text(
-        f"🗑️ **Card Deleted Successfully!**\n\n"
-        f"• **Deleted Card:** `{found_key}` (Clean: `{deleted_card.get('clean_name', '')}`)\n"
-        f"• **Remaining Cards in DB:** `{len(lookism_cards_db)}`",
-        parse_mode='Markdown'
-    )
 
 async def cmd_addt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -1819,6 +1680,99 @@ async def handle_private_states(update: Update, context: ContextTypes.DEFAULT_TY
             parse_mode='Markdown'
         )
 
+    elif step == "waiting_getst_phone":
+        phone = text
+        status_msg = await update.message.reply_text("🔄 Requesting verification code from Telegram...")
+        try:
+            temp_client = Client(
+                f"temp_getst_{user_id}_{int(time.time())}",
+                api_id=API_ID,
+                api_hash=API_HASH,
+                in_memory=True
+            )
+            await temp_client.connect()
+            sent_code = await temp_client.send_code(phone)
+
+            user_states[user_id] = {
+                "step": "waiting_getst_code",
+                "phone": phone,
+                "client": temp_client,
+                "phone_code_hash": sent_code.phone_code_hash
+            }
+            await status_msg.edit_text(
+                "✅ **Verification Code Sent!**\n\n"
+                "Kripya Telegram official app par aaya hua **OTP Code** yahan send karein (e.g. `12345`):",
+                parse_mode='Markdown'
+            )
+        except Exception as e:
+            await status_msg.edit_text(f"❌ Failed to send code: `{e}`")
+            user_states.pop(user_id, None)
+
+    elif step == "waiting_getst_code":
+        code = text.replace(" ", "")
+        phone = state.get("phone")
+        temp_client = state.get("client")
+        phone_code_hash = state.get("phone_code_hash")
+        status_msg = await update.message.reply_text("🔄 Signing in...")
+
+        try:
+            await temp_client.sign_in(phone, phone_code_hash, code)
+            me = await temp_client.get_me()
+            session_str = await temp_client.export_session_string()
+            await temp_client.disconnect()
+            user_states.pop(user_id, None)
+
+            acc_name = f"{me.first_name} {me.last_name or ''}".strip()
+            await status_msg.edit_text(
+                f"✅ **Session String Generated Successfully!** 🎉\n\n"
+                f"• **Name:** `{acc_name}`\n"
+                f"• **User ID:** `{me.id}`\n\n"
+                f"🔑 **Session String:**\n`{session_str}`",
+                parse_mode='Markdown'
+            )
+        except SessionPasswordNeeded:
+            user_states[user_id]["step"] = "waiting_getst_password"
+            await status_msg.edit_text(
+                "🔒 **Two-Step Verification (2FA) Required!**\n\n"
+                "Kripya apne account ka **Cloud Password** send karein:",
+                parse_mode='Markdown'
+            )
+        except Exception as e:
+            try:
+                await temp_client.disconnect()
+            except Exception:
+                pass
+            await status_msg.edit_text(f"❌ Sign in failed: `{e}`")
+            user_states.pop(user_id, None)
+
+    elif step == "waiting_getst_password":
+        password = text
+        temp_client = state.get("client")
+        status_msg = await update.message.reply_text("🔄 Verifying 2FA password...")
+
+        try:
+            await temp_client.check_password(password)
+            me = await temp_client.get_me()
+            session_str = await temp_client.export_session_string()
+            await temp_client.disconnect()
+            user_states.pop(user_id, None)
+
+            acc_name = f"{me.first_name} {me.last_name or ''}".strip()
+            await status_msg.edit_text(
+                f"✅ **Session String Generated Successfully (2FA Verified)!** 🎉\n\n"
+                f"• **Name:** `{acc_name}`\n"
+                f"• **User ID:** `{me.id}`\n\n"
+                f"🔑 **Session String:**\n`{session_str}`",
+                parse_mode='Markdown'
+            )
+        except Exception as e:
+            try:
+                await temp_client.disconnect()
+            except Exception:
+                pass
+            await status_msg.edit_text(f"❌ Password verification failed: `{e}`")
+            user_states.pop(user_id, None)
+
     elif step == "disabling_drecruit_chat":
         try:
             choice = int(text)
@@ -1880,12 +1834,11 @@ async def main():
         telegram_app.add_handler(CommandHandler(["start", "help"], cmd_start))
         telegram_app.add_handler(CommandHandler("ping", cmd_ping))
         telegram_app.add_handler(CommandHandler("cancel", cmd_cancel))
+        telegram_app.add_handler(CommandHandler("getst", cmd_getst))
         telegram_app.add_handler(CommandHandler("addt", cmd_addt))
         telegram_app.add_handler(CommandHandler("drecruit", cmd_drecruit))
         telegram_app.add_handler(CommandHandler("dbdwn", cmd_dbdwn))
         telegram_app.add_handler(CommandHandler("dbup", cmd_dbup))
-        telegram_app.add_handler(CommandHandler("scard", cmd_scard))
-        telegram_app.add_handler(CommandHandler("dcard", cmd_dcard))
         telegram_app.add_handler(CommandHandler("addacc", cmd_addacc))
         telegram_app.add_handler(CommandHandler("addsession", cmd_addsession))
         telegram_app.add_handler(CommandHandler("autoplay", cmd_autoplay))
