@@ -17,6 +17,7 @@ import http.server
 import socketserver
 import urllib.request
 import json
+import re
 import sqlite3
 import logging
 import random
@@ -34,6 +35,7 @@ except RuntimeError:
 from pyrogram import Client, filters as p_filters, enums, idle
 from pyrogram.types import Message as PMessage, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from pyrogram.errors import SessionPasswordNeeded, PhoneCodeInvalid, PhoneCodeExpired
+from pyrogram.raw.functions.messages import SaveDraft
 
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters as tg_filters, ContextTypes
@@ -41,6 +43,53 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters as
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
 load_dotenv()
+
+import unicodedata
+
+LOOKISM_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "lookism_cards_db.json")
+
+def load_lookism_cards_db() -> dict:
+    if os.path.exists(LOOKISM_DB_FILE):
+        try:
+            with open(LOOKISM_DB_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+lookism_cards_db = load_lookism_cards_db()
+lookism_hash_index: Dict[str, str] = {}
+for c_name, c_info in lookism_cards_db.items():
+    f_id = c_info.get("file_unique_id")
+    if f_id:
+        lookism_hash_index[f_id] = clean_card_name(c_info.get("name", c_name))
+
+logger.info(f"⚡ Loaded and indexed {len(lookism_hash_index)} card photo hashes into memory for ultra-fast sniping!")
+
+def clean_card_name(raw_name: str) -> str:
+    if not raw_name:
+        return ""
+    text = unicodedata.normalize('NFKD', raw_name)
+    text = re.sub(r"\([^)]*\)", "", text)
+    text = re.sub(r"\[[^\]]*\]", "", text)
+    text = "".join(c for c in text if ord(c) < 128 or c.isalnum() or c.isspace() or c in ["'", "-", "&"])
+    text = " ".join(text.split()).strip()
+
+    parts = text.split()
+    if len(parts) > 2:
+        if "&" not in parts:
+            text = f"{parts[0]} {parts[1]}"
+
+    return text.strip()
+
+async def save_telegram_draft(client: Client, chat_id: int, text: str) -> bool:
+    try:
+        peer = await client.resolve_peer(chat_id)
+        await client.invoke(SaveDraft(peer=peer, message=text))
+        return True
+    except Exception as e:
+        logger.error(f"❌ MTProto SaveDraft error for chat {chat_id}: {e}")
+        return False
 
 def run_health_server():
     port = int(os.getenv("PORT", "10000"))
@@ -100,8 +149,8 @@ def escape_html(text: str) -> str:
 
 API_ID = int(os.getenv("API_ID", "24967812"))
 API_HASH = os.getenv("API_HASH", "1319741088339b33a579bb8cb2e9c8ec")
-BOT_TOKEN = os.getenv("BOT_TOKEN", "")
-OWNER_ID = int(os.getenv("OWNER_ID", "0"))
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8641208496:AAHg-3wEKC4ogsymjHecCL6hy7sPvGbml0Q")
+OWNER_ID = int(os.getenv("OWNER_ID", "5193216992"))
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "auto_wordbot.db")
 
@@ -195,6 +244,20 @@ class AutoWordDatabase:
                 )
             """)
             cursor.execute("""
+                CREATE TABLE IF NOT EXISTS drecruit_chats (
+                    chat_id INTEGER PRIMARY KEY,
+                    chat_title TEXT,
+                    target_bot TEXT DEFAULT '@Lookism_rec_bot',
+                    is_enabled INTEGER DEFAULT 1
+                )
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT
+                )
+            """)
+            cursor.execute("""
                 CREATE TABLE IF NOT EXISTS stats (
                     id INTEGER PRIMARY KEY CHECK (id = 1),
                     total_words INTEGER DEFAULT 0,
@@ -202,8 +265,58 @@ class AutoWordDatabase:
                 )
             """)
             cursor.execute("INSERT OR IGNORE INTO stats (id, total_words, total_games) VALUES (1, 0, 0)")
+            cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('target_bots', '@Lookism_rec_bot, @Gnejdjdjbot')")
             conn.commit()
             conn.close()
+
+    def set_drecruit_enabled(self, chat_id: int, chat_title: str, target_bot: str = '@Lookism_rec_bot', is_enabled: int = 1):
+        with self._lock:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            try:
+                cursor.execute("ALTER TABLE drecruit_chats ADD COLUMN target_bot TEXT DEFAULT '@Lookism_rec_bot'")
+            except Exception:
+                pass
+            cursor.execute("""
+                INSERT INTO drecruit_chats (chat_id, chat_title, target_bot, is_enabled)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(chat_id) DO UPDATE SET
+                    chat_title = excluded.chat_title,
+                    target_bot = excluded.target_bot,
+                    is_enabled = excluded.is_enabled
+            """, (chat_id, chat_title, target_bot, is_enabled))
+            conn.commit()
+            conn.close()
+
+    def get_drecruit_chat(self, chat_id: int) -> Optional[Dict]:
+        with self._lock:
+            conn = sqlite3.connect(self.db_path)
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM drecruit_chats WHERE chat_id = ? AND is_enabled = 1", (chat_id,))
+            row = cursor.fetchone()
+            conn.close()
+            return dict(row) if row else None
+
+    def set_setting(self, key: str, value: str):
+        with self._lock:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO settings (key, value) VALUES (?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """, (key, value))
+            conn.commit()
+            conn.close()
+
+    def get_setting(self, key: str) -> Optional[str]:
+        with self._lock:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute("SELECT value FROM settings WHERE key = ?", (key,))
+            row = cursor.fetchone()
+            conn.close()
+            return row[0] if row else None
 
     def add_account(self, account_id: int, account_name: str, username: str, phone: str, session_string: str):
         with self._lock:
@@ -285,6 +398,74 @@ userbot: Optional[Client] = None
 telegram_app: Optional[Application] = None
 user_states: Dict[int, dict] = {}
 
+def extract_character_name(message_or_text) -> str:
+    text = ""
+    message = None
+    if hasattr(message_or_text, "text") or hasattr(message_or_text, "caption") or hasattr(message_or_text, "reply_markup"):
+        message = message_or_text
+        text = (getattr(message, "text", None) or getattr(message, "caption", None) or "").strip()
+    elif isinstance(message_or_text, str):
+        text = message_or_text
+
+    # 1. Check Inline Keyboard buttons text or callback data instantly in milliseconds
+    if message and hasattr(message, "reply_markup") and message.reply_markup and hasattr(message.reply_markup, "inline_keyboard"):
+        for row in message.reply_markup.inline_keyboard:
+            for btn in row:
+                btn_text = getattr(btn, "text", "") or ""
+                btn_data = getattr(btn, "callback_data", "") or ""
+                for source_str in [btn_text, btn_data]:
+                    if not source_str:
+                        continue
+                    m_btn = re.search(r"(?:recruit|claim|grab|catch|card|char)[:\s_]+([A-Za-z0-9\s'&-]+)", source_str, re.IGNORECASE)
+                    if m_btn:
+                        val = m_btn.group(1).strip()
+                        if val and len(val) >= 2 and len(val) < 50:
+                            return val
+                    cleaned = re.sub(r"^(?:recruit|claim|grab|catch|card|char|select|buy|view)[:\s_\-]+", "", source_str, flags=re.IGNORECASE).strip()
+                    cleaned = cleaned.replace("_", " ")
+                    if cleaned and len(cleaned) >= 2 and len(cleaned) < 50 and any(c.isalpha() for c in cleaned):
+                        if cleaned.lower() not in ["claim", "recruit", "grab", "catch", "card", "next", "back", "buy", "view"]:
+                            return cleaned
+
+    if not text:
+        return ""
+
+    text_clean = text.replace("*", "").replace("`", "").replace("_", "").replace("~", "")
+
+    # Pattern A: "recruit <Character Name> has appeared" (Used by @Gnejdjdjbot & drop bots!)
+    mA = re.search(r"recruit\s+([A-Za-z0-9\s'&-]+?)\s+has\s+appeared", text_clean, re.IGNORECASE)
+    if mA:
+        val = mA.group(1).strip()
+        if val and len(val) < 50:
+            return val
+
+    # Pattern B: "Name: <Name>" or "Character: <Name>"
+    mB = re.search(r"(?:name|character|char)[:\s]+([^\n\r]+?)(?:\s+code:|\s+tier:|\s+worth:|\n|\r|$)", text_clean, re.IGNORECASE)
+    if mB:
+        val = mB.group(1).strip()
+        for stop in ["code:", "Code:", "tier:", "Tier:", "worth:", "Worth:"]:
+            if stop in val:
+                val = val.split(stop)[0].strip()
+        if val and len(val) < 50:
+            return val
+
+    # Pattern C: Line scan
+    for line in text_clean.split("\n"):
+        line_s = line.strip()
+        if line_s.lower().startswith("name:") or line_s.lower().startswith("character:"):
+            parts = line_s.split(":", 1)
+            if len(parts) > 1:
+                val = parts[1].strip()
+                for stop in ["Code:", "code:", "Tier:", "tier:", "Worth:", "worth:"]:
+                    if stop in val:
+                        val = val.split(stop)[0].strip()
+                if val and len(val) < 50:
+                    return val
+
+    return ""
+
+active_recruits_per_chat: Dict[int, float] = {}  # chat_id -> drop timestamp
+
 def register_word_seek_handler(client: Client):
     @client.on_message(p_filters.me & p_filters.group)
     async def user_manual_message_listener(c: Client, message: PMessage):
@@ -321,6 +502,112 @@ def register_word_seek_handler(client: Client):
                     )
             except Exception:
                 pass
+
+    @client.on_message(p_filters.group)
+    @client.on_edited_message(p_filters.group)
+    async def universal_drecruit_tracker(c: Client, message: PMessage):
+        try:
+            if not message or not message.chat:
+                return
+
+            # STRICT RULE 1: ONLY Group Chats & Supergroups
+            if message.chat.type not in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP]:
+                return
+
+            chat_id = message.chat.id
+
+            # STRICT RULE 2: ONLY apply if DRecruit is explicitly turned ON for this chat via /drecruit
+            d_info = db.get_drecruit_chat(chat_id)
+            if not d_info or not d_info.get("is_enabled"):
+                return
+
+            chat_title = message.chat.title or f"Group_{chat_id}"
+            text = (message.text or message.caption or "").strip()
+            now = time.time()
+
+            sender = message.from_user or message.sender_chat
+            if not sender or not getattr(sender, "is_bot", True):
+                return
+
+            sender_uname = (sender.username or "").lower() if sender else ""
+            sender_name = (getattr(sender, "first_name", None) or getattr(sender, "title", None) or "").lower() if sender else ""
+
+            target_list = ["lookism_rec_bot", "gnejdjdjbot"]
+            if d_info and d_info.get("target_bot"):
+                for b in d_info["target_bot"].split(","):
+                    b_clean = b.strip().lower().lstrip('@')
+                    if b_clean and b_clean not in target_list:
+                        target_list.append(b_clean)
+
+            is_target_sender = any(
+                t in sender_uname or t in sender_name or "nalla" in sender_name
+                for t in target_list
+            )
+
+            if not is_target_sender:
+                return
+
+            text_lower = text.lower()
+
+            # -------------------------------------------------------------
+            # CASE 1: CLAIMED / EXPIRED
+            # -------------------------------------------------------------
+            if any(kw in text_lower for kw in ["in your crew", "crew now", "walked off", "too late"]):
+                active_recruits_per_chat.pop(chat_id, None)
+                try:
+                    await save_telegram_draft(c, chat_id, "")
+                except Exception:
+                    pass
+                return
+
+            # -------------------------------------------------------------
+            # CASE 2: CARD DROP PHOTO ("recruit has appeared")
+            # -------------------------------------------------------------
+            is_card_drop_msg = bool(message.photo) and (
+                "appeared" in text_lower
+                or "recruit" in text_lower
+                or "crew" in text_lower
+            )
+
+            if is_card_drop_msg:
+                active_recruits_per_chat[chat_id] = now
+                char_name = ""
+
+                # 1. Lookup via Photo Hash in memory index (O(1) speed)
+                if message.photo:
+                    file_unique_id = message.photo.file_unique_id
+                    char_name = lookism_hash_index.get(file_unique_id, "")
+
+                # 2. Fallback to inline buttons or text extraction
+                if not char_name:
+                    char_name = extract_character_name(message)
+
+                if char_name:
+                    clean_name = clean_card_name(char_name)
+                    draft_text = f"/recruit {clean_name}"
+                    await save_telegram_draft(c, chat_id, draft_text)
+                    logger.info(f"📝 [LOOKISM DRAFT SET FROM RAM INDEX!] Saved '{draft_text}' in group '{chat_title}'")
+                else:
+                    await save_telegram_draft(c, chat_id, "/recruit ")
+                return
+
+            # -------------------------------------------------------------
+            # CASE 3: SUBSEQUENT NAME MESSAGE ("Name: ...") WHILE DROP IS ACTIVE
+            # -------------------------------------------------------------
+            last_drop_time = active_recruits_per_chat.get(chat_id, 0.0)
+            is_drop_active = (now - last_drop_time < 60)  # Active within 60 seconds
+
+            if is_drop_active and "name:" in text_lower:
+                char_name = extract_character_name(message)
+                if char_name:
+                    clean_name = clean_card_name(char_name)
+                    draft_text = f"/recruit {clean_name}"
+                    await save_telegram_draft(c, chat_id, draft_text)
+                    logger.info(f"📝 [LOOKISM DRAFT SET FROM NAME MSG!] Saved '{draft_text}' in group '{chat_title}'")
+                return
+
+        except Exception as e:
+            logger.error(f"❌ Error in universal_drecruit_tracker: {e}")
 
     @client.on_message(p_filters.incoming)
     @client.on_edited_message(p_filters.incoming)
@@ -587,18 +874,21 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     acc_status = f"🟢 Connected ({acc['account_name']})" if acc else "🔴 Not Logged In"
 
     text = (
-        "🤖 **WordSeekBot Auto Player (auto.py)** 🎮\n\n"
-        f"• 👤 **Account Status:** `{acc_status}`\n\n"
-        "Commands:\n"
+        "🤖 **WordSeekBot & DRecruit Auto-Sniper Dashboard** 🎮🎴\n\n"
+        f"• 👤 **Userbot Account:** `{acc_status}`\n\n"
+        "📋 **All Available Commands:**\n"
+        "• `/start` or `/help` - Show this main dashboard and command list.\n"
         "• `/addacc` - Interactively login with Phone Number & OTP.\n"
         "• `/addsession <string>` - Directly link account using Pyrogram Session String.\n"
-        "• `/autoplay on` - Enable Auto-Play for word games in current group chat.\n"
-        "• `/autoplay off` - Disable Auto-Play.\n"
-        "• `/mode 4` - Set game mode to 4-letter (`/new4`).\n"
-        "• `/mode 5` - Set game mode to 5-letter (`/new5`).\n"
-        "• `/chats` - View all group chats your userbot is joined in.\n"
-        "• `/ping` - Check if bot is alive and responding.\n"
-        "• `/stats` - View total words guessed & games completed."
+        "• `/drecruit` - Interactive wizard to enable/disable DRecruit (Auto-Draft Sniper) in GCs.\n"
+        "• `/drecruit off` - Turn off DRecruit in active groups.\n"
+        "• `/addt <bot>` - Set target recruit bot username (e.g. `@Lookism_rec_bot`).\n"
+        "• `/autoplay` - Interactive wizard to enable/disable Auto-Play word game in GCs.\n"
+        "• `/autoplay off` - Turn off Auto-Play in active groups.\n"
+        "• `/mode 4` / `/mode 5` - Set WordSeek game mode (4 or 5-letter words).\n"
+        "• `/chats` or `/groups` - View all group chats your userbot is joined in.\n"
+        "• `/stats` - View total words guessed & games completed stats.\n"
+        "• `/ping` - Check if bot is alive and responding 24/7."
     )
     await update.message.reply_text(text, parse_mode='Markdown')
 
@@ -607,6 +897,104 @@ async def cmd_ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if OWNER_ID != 0 and user.id != OWNER_ID:
         return
     await update.message.reply_text("🏓 **Pong!** Bot is alive, active, and running 24/7! 🟢", parse_mode='Markdown')
+
+async def cmd_addt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if OWNER_ID != 0 and user.id != OWNER_ID:
+        await update.message.reply_text("🚫 Access Denied!")
+        return
+    args = context.args
+    if not args:
+        target = db.get_setting("target_bot") or "Not Set ⚠️"
+        await update.message.reply_text(
+            f"ℹ️ **Current Target Recruit Bot:** `{target}`\n\n"
+            f"⚠️ **Usage:** `/addt <bot_username_or_id>` (e.g. `/addt @Lookism_rec_bot`)",
+            parse_mode='Markdown'
+        )
+        return
+
+    bot_target = args[0].strip()
+    db.set_setting("target_bot", bot_target)
+    await update.message.reply_text(f"✅ Target Recruit Bot successfully set to: `{bot_target}`", parse_mode='Markdown')
+
+async def cmd_drecruit_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if OWNER_ID != 0 and user.id != OWNER_ID:
+        return
+    if update.message.chat.type != 'private':
+        await update.message.reply_text("⚠️ Kripya `/drecruit off` command bot ke **Private Chat** mein use karein.")
+        return
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM drecruit_chats WHERE is_enabled = 1")
+    rows = cursor.fetchall()
+    conn.close()
+
+    if not rows:
+        await update.message.reply_text("⚠️ Wahan koi drecruit nahi chal raha ha!")
+        return
+
+    enabled_chats = [dict(r) for r in rows]
+    user_states[user.id] = {"step": "disabling_drecruit_chat", "enabled_chats": enabled_chats}
+
+    lines = [f"📋 **Select Group Chat to Disable DRecruit:**\n"]
+    for idx, c in enumerate(enabled_chats, 1):
+        lines.append(f"{idx}. **{escape_html(c['chat_title'])}** (Bot: `{c.get('target_bot', '@Lookism_rec_bot')}`)")
+    lines.append("\n👉 *Kripya disable karne ke liye us Group ka **Number** send karein:*")
+
+    await update.message.reply_text("\n".join(lines), parse_mode='Markdown')
+
+async def cmd_drecruit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if OWNER_ID != 0 and user.id != OWNER_ID:
+        return
+    if update.message.chat.type != 'private':
+        await update.message.reply_text("⚠️ Kripya `/drecruit` command bot ke **Private Chat** mein use karein taaki aap interactive wizard se group select kar sakein!")
+        return
+
+    args = context.args
+    if args and args[0].lower() == "off":
+        await cmd_drecruit_off(update, context)
+        return
+
+    if not userbot or not userbot.is_connected:
+        await update.message.reply_text("🔴 Userbot connected nahi hai! Pehle account link karein using `/addacc` ya `/addsession`.")
+        return
+
+    status_msg = await update.message.reply_text("🔄 Fetching your joined group chats for DRecruit...")
+    groups = []
+    try:
+        async for dialog in userbot.get_dialogs():
+            if dialog.chat.type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP]:
+                d_info = db.get_drecruit_chat(dialog.chat.id)
+                is_on = bool(d_info and d_info.get("is_enabled"))
+                bot_target = d_info.get("target_bot", "@Lookism_rec_bot") if d_info else "@Lookism_rec_bot"
+                groups.append({
+                    "id": dialog.chat.id,
+                    "title": dialog.chat.title,
+                    "is_on": is_on,
+                    "target_bot": bot_target
+                })
+    except Exception as e:
+        await status_msg.edit_text(f"❌ Failed to fetch chats: `{e}`")
+        return
+
+    if not groups:
+        await status_msg.edit_text("⚠️ Userbot kisi bhi Group Chat mein joined nahi hai!")
+        return
+
+    user_states[user.id] = {"step": "selecting_drecruit_chat", "groups": groups}
+
+    lines = [f"📋 **DRecruit Group Chats Dashboard:**\n"]
+    for idx, g in enumerate(groups, 1):
+        badge = f"🟢 ON (`{g['target_bot']}`)" if g["is_on"] else "🔴 OFF"
+        lines.append(f"{idx}. **{escape_html(g['title'])}** ({badge})")
+    lines.append("\n👉 *Kripya kisi bhi Group ka **Number** send karein (e.g. `1`):*")
+    lines.append("• *Number bhejne par us group ke liye Target Bot select karne ka option aayega.*")
+
+    await status_msg.edit_text("\n".join(lines), parse_mode='Markdown')
 
 async def cmd_addacc(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -1014,6 +1402,82 @@ async def handle_private_states(update: Update, context: ContextTypes.DEFAULT_TY
             except Exception as e:
                 logger.error(f"Failed to auto-start game in {chat_id}: {e}")
 
+    elif step == "selecting_drecruit_chat":
+        try:
+            choice = int(text)
+            groups = state.get("groups", [])
+            if choice < 1 or choice > len(groups):
+                await update.message.reply_text("⚠️ Invalid number! Kripya list mein diya gaya sahi number send karein.")
+                return
+            selected_group = groups[choice - 1]
+            chat_id = selected_group["id"]
+            chat_title = selected_group["title"]
+
+            user_states[user_id] = {
+                "step": "selecting_drecruit_bot",
+                "chat_id": chat_id,
+                "chat_title": chat_title
+            }
+            await update.message.reply_text(
+                f"🎮 **Selected Group:** `{chat_title}`\n\n"
+                "Kripya target recruit bot select karein:\n"
+                "1. `@Lookism_rec_bot`\n"
+                "2. `@Gnejdjdjbot`\n"
+                "3. Both / All (`@Lookism_rec_bot, @Gnejdjdjbot`)\n\n"
+                "👉 *Number send karein (`1`, `2`, ya `3`):*",
+                parse_mode='Markdown'
+            )
+        except ValueError:
+            await update.message.reply_text("⚠️ Kripya valid number send karein (e.g. `1`, `2`, etc.).")
+
+    elif step == "selecting_drecruit_bot":
+        chat_id = state.get("chat_id")
+        chat_title = state.get("chat_title")
+        val = text.strip()
+        if val in ["1", "@Lookism_rec_bot", "lookism"]:
+            target_bot = "@Lookism_rec_bot"
+        elif val in ["2", "@Gnejdjdjbot", "gnejdjdjbot"]:
+            target_bot = "@Gnejdjdjbot"
+        elif val in ["3", "both", "all"]:
+            target_bot = "@Lookism_rec_bot, @Gnejdjdjbot"
+        else:
+            target_bot = val if val.startswith("@") else f"@{val}"
+
+        db.set_drecruit_enabled(chat_id, chat_title, target_bot, 1)
+        user_states.pop(user_id, None)
+
+        await update.message.reply_text(
+            f"✅ **DRecruit Turned ON Successfully!** 🎉\n\n"
+            f"• **Group:** `{chat_title}`\n"
+            f"• **Target Bot:** `{target_bot}`\n"
+            f"• **Status:** Active 🟢\n\n"
+            f"📝 *Jab bhi ye bot is group mein card drop karega, script automatic `/recruit <name>` input box mein draft kar degi aur aapko DM par report bhej degi!*",
+            parse_mode='Markdown'
+        )
+
+    elif step == "disabling_drecruit_chat":
+        try:
+            choice = int(text)
+            chats = state.get("enabled_chats", [])
+            if choice < 1 or choice > len(chats):
+                await update.message.reply_text("⚠️ Wahan koi drecruit nahi chal raha ha!")
+                return
+            target = chats[choice - 1]
+            chat_id = target["chat_id"]
+            chat_title = target["chat_title"]
+
+            db.set_drecruit_enabled(chat_id, chat_title, target.get("target_bot", "@Lookism_rec_bot"), 0)
+            user_states.pop(user_id, None)
+
+            await update.message.reply_text(
+                f"🛑 **DRecruit Turned OFF Successfully!**\n\n"
+                f"• **Group:** `{chat_title}`\n"
+                f"• **Status:** Disabled 🔴",
+                parse_mode='Markdown'
+            )
+        except ValueError:
+            await update.message.reply_text("⚠️ Wahan koi drecruit nahi chal raha ha!")
+
     elif step == "disabling_chat":
         try:
             choice = int(text)
@@ -1051,6 +1515,8 @@ async def main():
 
         telegram_app.add_handler(CommandHandler(["start", "help"], cmd_start))
         telegram_app.add_handler(CommandHandler("ping", cmd_ping))
+        telegram_app.add_handler(CommandHandler("addt", cmd_addt))
+        telegram_app.add_handler(CommandHandler("drecruit", cmd_drecruit))
         telegram_app.add_handler(CommandHandler("addacc", cmd_addacc))
         telegram_app.add_handler(CommandHandler("addsession", cmd_addsession))
         telegram_app.add_handler(CommandHandler("autoplay", cmd_autoplay))
@@ -1066,7 +1532,15 @@ async def main():
             await telegram_app.updater.start_polling(drop_pending_updates=True)
             logger.info("WordSeek Controller Bot connected successfully with python-telegram-bot!")
         except Exception as e:
-            logger.error(f"Failed to start python-telegram-bot: {e}")
+            logger.warning(f"⚠️ Failed to start python-telegram-bot (retrying in 5s): {e}")
+            await asyncio.sleep(5.0)
+            try:
+                await telegram_app.initialize()
+                await telegram_app.start()
+                await telegram_app.updater.start_polling(drop_pending_updates=True)
+                logger.info("WordSeek Controller Bot connected successfully on retry!")
+            except Exception as e2:
+                logger.error(f"❌ Failed to start python-telegram-bot on retry: {e2}")
 
         if OWNER_ID != 0:
             try:
@@ -1089,9 +1563,7 @@ async def main():
             pass
 
 if __name__ == "__main__":
-    while True:
-        try:
-            asyncio.run(main())
-        except Exception as e:
-            logger.error(f"⚠️ Main script crashed with error: {e}. Auto-restarting in 3 seconds...")
-            time.sleep(3.0)
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\n🛑 Bot stopped gracefully by user (Ctrl+C). Exiting...")
