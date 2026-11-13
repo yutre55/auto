@@ -98,6 +98,32 @@ def clean_card_name(raw_name: str) -> str:
 
     return text.strip()
 
+def migrate_and_clean_lookism_db():
+    if not os.path.exists(LOOKISM_DB_FILE):
+        return
+    try:
+        with open(LOOKISM_DB_FILE, "r", encoding="utf-8") as f:
+            db_data = json.load(f)
+
+        updated = False
+        new_db = {}
+        for k, v in db_data.items():
+            original_name = v.get("name", k)
+            cleaned = clean_card_name(original_name)
+            v["name"] = original_name
+            v["clean_name"] = cleaned
+            new_db[k] = v
+            if "clean_name" not in v or v["clean_name"] != cleaned:
+                updated = True
+
+        if updated:
+            with open(LOOKISM_DB_FILE, "w", encoding="utf-8") as f:
+                json.dump(new_db, f, indent=2, ensure_ascii=False)
+            print("🧹 Normalized all card clean_names in lookism_cards_db.json!")
+    except Exception as e:
+        print(f"Error migrating lookism db: {e}")
+
+migrate_and_clean_lookism_db()
 lookism_cards_db = load_lookism_cards_db()
 lookism_hash_index: Dict[str, str] = {}
 for c_name, c_info in lookism_cards_db.items():
@@ -1129,7 +1155,7 @@ async def cmd_dcard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not args:
         await update.message.reply_text(
             "⚠️ **Usage:** `/dcard <card_name>`\n\n"
-            "Aap database se kisi bhi card ko uske naam se delete kar sakte hain (e.g., `/dcard Takuma Arashimaya`).",
+            "Aap database se kisi bhi card ko uske naam se delete kar sakte hain (e.g., `/dcard Yeonwoo` ya `/dcard Takuma`).",
             parse_mode='Markdown'
         )
         return
@@ -1138,8 +1164,11 @@ async def cmd_dcard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lookism_cards_db = load_lookism_cards_db()
 
     found_key = None
-    for k in lookism_cards_db.keys():
-        if k.lower() == query or query in k.lower():
+    for k, v in lookism_cards_db.items():
+        orig_name = k.lower()
+        clean_n = v.get("clean_name", "").lower()
+        db_name = v.get("name", "").lower()
+        if query == orig_name or query == clean_n or query == db_name or query in orig_name or query in clean_n:
             found_key = k
             break
 
@@ -1160,11 +1189,11 @@ async def cmd_dcard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for c_name, c_info in lookism_cards_db.items():
         f_id = c_info.get("file_unique_id")
         if f_id:
-            lookism_hash_index[f_id] = clean_card_name(c_info.get("name", c_name))
+            lookism_hash_index[f_id] = clean_card_name(c_info.get("name", c_info.get("clean_name", c_name)))
 
     await update.message.reply_text(
         f"🗑️ **Card Deleted Successfully!**\n\n"
-        f"• **Deleted Card:** `{found_key}`\n"
+        f"• **Deleted Card:** `{found_key}` (Clean: `{deleted_card.get('clean_name', '')}`)\n"
         f"• **Remaining Cards in DB:** `{len(lookism_cards_db)}`",
         parse_mode='Markdown'
     )
