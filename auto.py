@@ -44,6 +44,13 @@ from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
 load_dotenv()
 
+# Logging setup
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
+logger = logging.getLogger("WordSeekAutoBot")
+
 import unicodedata
 
 LOOKISM_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "lookism_cards_db.json")
@@ -134,13 +141,6 @@ def run_health_server():
 
 # Start health server immediately at module load time so Render detects the open port instantly
 threading.Thread(target=run_health_server, daemon=True).start()
-
-# Logging setup
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
-logger = logging.getLogger("WordSeekAutoBot")
 
 def escape_html(text: str) -> str:
     if not text:
