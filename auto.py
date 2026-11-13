@@ -1004,49 +1004,21 @@ async def cmd_dbup(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await status_msg.edit_text(f"❌ Failed to update database: `{e}`")
 
 async def cmd_scard(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global lookism_cards_db, lookism_hash_index
     user = update.effective_user
     if OWNER_ID != 0 and user.id != OWNER_ID:
         await update.message.reply_text("🚫 Access Denied!")
         return
-
-    # Supports reply, forwarded message, or direct upload in same message
-    target_msg = update.message.reply_to_message if update.message.reply_to_message else update.message
-
-    text = (target_msg.text or target_msg.caption or update.message.text or update.message.caption or "").strip()
-    photo = target_msg.photo or update.message.photo
-
-    if not text and not photo:
-        await update.message.reply_text(
-            "⚠️ **Usage:** Kripya card message ko forward karein, photo upload karein, ya message par reply karke `/scard` send karein.",
-            parse_mode='Markdown'
-        )
+    if update.message.chat.type != 'private':
+        await update.message.reply_text("⚠️ Kripya `/scard` command bot ke **Private Chat** mein use karein.")
         return
 
-    char_name = ""
-    tier_info = "Mortal"
-    worth_info = "200"
-
-    m_name = re.search(r"Name:\s*([^\n\r]+)", text, re.IGNORECASE)
-    if m_name:
-        char_name = m_name.group(1).strip()
-
-    m_tier = re.search(r"Tier:\s*([^\n\r]+)", text, re.IGNORECASE)
-    if m_tier:
-        tier_info = m_tier.group(1).strip()
-
-    m_worth = re.search(r"Worth:\s*([^\n\r]+)", text, re.IGNORECASE)
-    if m_worth:
-        worth_info = m_worth.group(1).strip()
-
-    if not char_name:
-        await update.message.reply_text("❌ Card name extract nahi ho paya! Text mein 'Name: <Name>' hona chahiye.")
-        return
-
-    file_unique_id = photo.file_unique_id if photo else ""
-    file_id = photo.file_id if photo else ""
-
-    clean_name = clean_card_name(char_name)
+    user_states[user.id] = {"step": "waiting_for_card_details"}
+    await update.message.reply_text(
+        "📸 **Card Scraper Wizard Active** 🎴\n\n"
+        "Kripya ab us **card message ko forward karein** ya **photo + details send karein**.\n\n"
+        "👉 *Agar bich mein rokna ho toh `/cancel` send karein:*",
+        parse_mode='Markdown'
+    )
 
     lookism_cards_db[char_name] = {
         "name": char_name,
