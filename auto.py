@@ -907,7 +907,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• `/chats` or `/groups` - View all group chats your userbot is joined in.\n"
         "• `/dbdwn` - Download current `lookism_cards_db.json` database file.\n"
         "• `/dbup` (reply to json file) - Upload and instantly update live database in memory.\n"
-        "• `/scard` (reply to card photo/details) - Instantly scrape & save card into DB.\n"
+        "• `/scard` - Interactive wizard to forward/upload card details and save to DB.\n"
+        "• `/cancel` - Cancel any active interactive wizard.\n"
         "• `/stats` - View total words guessed & games completed stats.\n"
         "• `/ping` - Check if bot is alive and responding 24/7."
     )
@@ -918,6 +919,33 @@ async def cmd_ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if OWNER_ID != 0 and user.id != OWNER_ID:
         return
     await update.message.reply_text("🏓 **Pong!** Bot is alive, active, and running 24/7! 🟢", parse_mode='Markdown')
+
+async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if OWNER_ID != 0 and user.id != OWNER_ID:
+        return
+    if user.id in user_states:
+        user_states.pop(user.id, None)
+        await update.message.reply_text("❌ **Interaction cancelled successfully.**", parse_mode='Markdown')
+    else:
+        await update.message.reply_text("⚠️ Koi active interaction nahi chal rahi hai.")
+
+async def cmd_scard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if OWNER_ID != 0 and user.id != OWNER_ID:
+        await update.message.reply_text("🚫 Access Denied!")
+        return
+    if update.message.chat.type != 'private':
+        await update.message.reply_text("⚠️ Kripya `/scard` command bot ke **Private Chat** mein use karein.")
+        return
+
+    user_states[user.id] = {"step": "waiting_for_card_message"}
+    await update.message.reply_text(
+        "📸 **Card Scraper Wizard Active** 🎴\n\n"
+        "Kripya ab us **card message ko forward karein** ya **photo + details upload karein**.\n\n"
+        "👉 *Agar bich mein rokna ho toh `/cancel` send karein:*",
+        parse_mode='Markdown'
+    )
 
 async def cmd_dbdwn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -1618,6 +1646,69 @@ async def handle_private_states(update: Update, context: ContextTypes.DEFAULT_TY
             parse_mode='Markdown'
         )
 
+    elif step == "waiting_for_card_message":
+        target_msg = update.message
+        msg_text = (target_msg.text or target_msg.caption or "").strip()
+        photo = target_msg.photo
+
+        if not msg_text and not photo:
+            await update.message.reply_text("⚠️ Kripya valid card photo aur details forward/upload karein (ya `/cancel` type karein).")
+            return
+
+        char_name = ""
+        tier_info = "Mortal"
+        worth_info = "200"
+
+        m_name = re.search(r"Name:\s*([^\n\r]+)", msg_text, re.IGNORECASE)
+        if m_name:
+            char_name = m_name.group(1).strip()
+
+        m_tier = re.search(r"Tier:\s*([^\n\r]+)", msg_text, re.IGNORECASE)
+        if m_tier:
+            tier_info = m_tier.group(1).strip()
+
+        m_worth = re.search(r"Worth:\s*([^\n\r]+)", msg_text, re.IGNORECASE)
+        if m_worth:
+            worth_info = m_worth.group(1).strip()
+
+        if not char_name:
+            await update.message.reply_text("❌ Card name extract nahi ho paya! Text mein 'Name: <Name>' hona chahiye. Dobara bhein ya `/cancel` karein.")
+            return
+
+        file_unique_id = photo.file_unique_id if photo else ""
+        file_id = photo.file_id if photo else ""
+        clean_name = clean_card_name(char_name)
+
+        lookism_cards_db[char_name] = {
+            "name": char_name,
+            "clean_name": clean_name,
+            "description": f"{tier_info} - {worth_info}",
+            "file_unique_id": file_unique_id,
+            "file_id": file_id
+        }
+
+        try:
+            with open(LOOKISM_DB_FILE, "w", encoding="utf-8") as f:
+                json.dump(lookism_cards_db, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            await update.message.reply_text(f"❌ Failed to save to database file: `{e}`")
+            return
+
+        if file_unique_id:
+            lookism_hash_index[file_unique_id] = clean_name
+
+        user_states.pop(user.id, None)
+
+        await update.message.reply_text(
+            f"✅ **Card Saved Successfully via /scard!** 🎉\n\n"
+            f"• **Original Name:** `{char_name}`\n"
+            f"• **Clean Name (Draft):** `{clean_name}`\n"
+            f"• **Tier / Worth:** `{tier_info} | {worth_info}`\n"
+            f"• **Photo Hash:** `{file_unique_id or 'None'}`\n\n"
+            "⚡ *Database aur memory index update ho gaye hain!*",
+            parse_mode='Markdown'
+        )
+
     elif step == "disabling_drecruit_chat":
         try:
             choice = int(text)
@@ -1678,6 +1769,7 @@ async def main():
 
         telegram_app.add_handler(CommandHandler(["start", "help"], cmd_start))
         telegram_app.add_handler(CommandHandler("ping", cmd_ping))
+        telegram_app.add_handler(CommandHandler("cancel", cmd_cancel))
         telegram_app.add_handler(CommandHandler("addt", cmd_addt))
         telegram_app.add_handler(CommandHandler("drecruit", cmd_drecruit))
         telegram_app.add_handler(CommandHandler("dbdwn", cmd_dbdwn))
