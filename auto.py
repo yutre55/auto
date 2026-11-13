@@ -1004,21 +1004,58 @@ async def cmd_dbup(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await status_msg.edit_text(f"❌ Failed to update database: `{e}`")
 
 async def cmd_scard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global lookism_cards_db, lookism_hash_index
     user = update.effective_user
     if OWNER_ID != 0 and user.id != OWNER_ID:
         await update.message.reply_text("🚫 Access Denied!")
         return
-    if update.message.chat.type != 'private':
-        await update.message.reply_text("⚠️ Kripya `/scard` command bot ke **Private Chat** mein use karein.")
+
+    # Supports reply to card message, forwarded message, or direct photo + caption
+    target_msg = update.message.reply_to_message if update.message.reply_to_message else update.message
+    text = (target_msg.caption or target_msg.text or update.message.caption or update.message.text or "").strip()
+    photo = target_msg.photo or update.message.photo
+
+    p_obj = None
+    if photo:
+        p_obj = photo[-1] if isinstance(photo, list) else photo
+
+    if not text and not p_obj:
+        await update.message.reply_text(
+            "⚠️ **Card details nahi mili!**\n\n"
+            "Kripya card message par reply karke `/scard` bhein, ya card photo ke sath caption mein details bhein.",
+            parse_mode='Markdown'
+        )
         return
 
-    user_states[user.id] = {"step": "waiting_for_card_details"}
-    await update.message.reply_text(
-        "📸 **Card Scraper Wizard Active** 🎴\n\n"
-        "Kripya ab us **card message ko forward karein** ya **photo + details send karein**.\n\n"
-        "👉 *Agar bich mein rokna ho toh `/cancel` send karein:*",
-        parse_mode='Markdown'
-    )
+    char_name = ""
+    tier_info = "Mortal"
+    worth_info = "200"
+
+    m_name = re.search(r"Name:\s*([^\n\r]+)", text, re.IGNORECASE)
+    if m_name:
+        char_name = m_name.group(1).strip()
+
+    m_tier = re.search(r"Tier:\s*([^\n\r]+)", text, re.IGNORECASE)
+    if m_tier:
+        tier_info = m_tier.group(1).strip()
+
+    m_worth = re.search(r"Worth:\s*([^\n\r]+)", text, re.IGNORECASE)
+    if m_worth:
+        worth_info = m_worth.group(1).strip()
+
+    if not char_name:
+        await update.message.reply_text(
+            f"❌ **Card name extract nahi ho paya!**\n"
+            f"Text mein `Name: <Name>` hona zaroori hai.\n\n"
+            f"📄 **Received Text:**\n`{text}`",
+            parse_mode='Markdown'
+        )
+        return
+
+    file_unique_id = getattr(p_obj, "file_unique_id", "") if p_obj else ""
+    file_id = getattr(p_obj, "file_id", "") if p_obj else ""
+
+    clean_name = clean_card_name(char_name)
 
     lookism_cards_db[char_name] = {
         "name": char_name,
@@ -1032,32 +1069,19 @@ async def cmd_scard(update: Update, context: ContextTypes.DEFAULT_TYPE):
         with open(LOOKISM_DB_FILE, "w", encoding="utf-8") as f:
             json.dump(lookism_cards_db, f, indent=2, ensure_ascii=False)
     except Exception as e:
-        await update.message.reply_text(f"❌ Failed to save to database file: `{e}`")
+        await update.message.reply_text(f"❌ Failed to save database file: `{e}`")
         return
 
     if file_unique_id:
         lookism_hash_index[file_unique_id] = clean_name
 
     await update.message.reply_text(
-        f"✅ **Card Saved Successfully via /scard!** 🎉\n\n"
+        f"✅ **Card Added Successfully to Database!** 🎉\n\n"
         f"• **Original Name:** `{char_name}`\n"
-        f"• **Clean Name (Draft):** `{clean_name}`\n"
+        f"• **Draft Name (Clean):** `{clean_name}` 🎯\n"
         f"• **Tier / Worth:** `{tier_info} | {worth_info}`\n"
-        f"• **Photo Hash:** `{file_unique_id or 'None'}`\n\n"
-        "⚡ *Database aur memory index update ho gaye hain!*",
-        parse_mode='Markdown'
-    )
-
-    if file_unique_id:
-        lookism_hash_index[file_unique_id] = clean_name
-
-    await update.message.reply_text(
-        f"✅ **Card Saved Successfully via /scard!** 🎉\n\n"
-        f"• **Original Name:** `{char_name}`\n"
-        f"• **Clean Name (Draft):** `{clean_name}`\n"
-        f"• **Tier / Worth:** `{tier_info} | {worth_info}`\n"
-        f"• **Photo Hash:** `{file_unique_id or 'None'}`\n\n"
-        "⚡ *Database aur memory index update ho gaye hain!*",
+        f"• **Photo Unique ID:** `{file_unique_id or 'None'}`\n\n"
+        f"📊 *Total Cards in DB:* `{len(lookism_cards_db)}`",
         parse_mode='Markdown'
     )
 
@@ -1647,8 +1671,9 @@ async def handle_private_states(update: Update, context: ContextTypes.DEFAULT_TY
             await update.message.reply_text("❌ Card name extract nahi ho paya! Text mein 'Name: <Name>' hona chahiye. Dobara bhein ya `/cancel` karein.")
             return
 
-        file_unique_id = photo.file_unique_id if photo else ""
-        file_id = photo.file_id if photo else ""
+        p_obj = photo[-1] if isinstance(photo, list) else photo
+        file_unique_id = getattr(p_obj, "file_unique_id", "") if p_obj else ""
+        file_id = getattr(p_obj, "file_id", "") if p_obj else ""
         clean_name = clean_card_name(char_name)
 
         lookism_cards_db[char_name] = {
