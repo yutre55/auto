@@ -907,7 +907,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• `/chats` or `/groups` - View all group chats your userbot is joined in.\n"
         "• `/dbdwn` - Download current `lookism_cards_db.json` database file.\n"
         "• `/dbup` (reply to json file) - Upload and instantly update live database in memory.\n"
-        "• `/scard` - Interactive wizard to forward/upload card details and save to DB.\n"
+        "• `/scard` - Save/add a new card to DB.\n"
+        "• `/dcard <name>` - Delete a card from DB by name.\n"
         "• `/cancel` - Cancel any active interactive wizard.\n"
         "• `/stats` - View total words guessed & games completed stats.\n"
         "• `/ping` - Check if bot is alive and responding 24/7."
@@ -956,10 +957,23 @@ async def cmd_dbdwn(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Database file `lookism_cards_db.json` not found on disk!")
         return
     try:
+        db_data = load_lookism_cards_db()
+        total = len(db_data)
+        names = [c_info.get("name", k) for k, c_info in db_data.items()]
+        names_preview = ", ".join(names[:35]) if names else "None"
+        if len(names) > 35:
+            names_preview += f" ... and {len(names) - 35} more"
+
+        caption = (
+            f"📦 **Lookism Cards Database (`lookism_cards_db.json`)**\n\n"
+            f"• **Total Cards Stored:** `{total}`\n"
+            f"• **Card Names:** `{names_preview}`"
+        )
         with open(LOOKISM_DB_FILE, "rb") as f:
             await update.message.reply_document(
                 document=f,
-                caption=f"📦 **Lookism Cards Database (`lookism_cards_db.json`)**\n• Total Cards / Hashes: `{len(lookism_hash_index)}`"
+                caption=caption,
+                parse_mode='Markdown'
             )
     except Exception as e:
         await update.message.reply_text(f"❌ Failed to send database file: `{e}`")
@@ -1010,10 +1024,22 @@ async def cmd_scard(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🚫 Access Denied!")
         return
 
-    # Supports reply to card message, forwarded message, or direct photo + caption
-    target_msg = update.message.reply_to_message if update.message.reply_to_message else update.message
-    text = (target_msg.caption or target_msg.text or update.message.caption or update.message.text or "").strip()
-    photo = target_msg.photo or update.message.photo
+    reply = update.message.reply_to_message
+
+    # Extract text from replied message first, else current message
+    text = ""
+    if reply:
+        text = (reply.caption or reply.text or "").strip()
+    if not text:
+        text = (update.message.caption or update.message.text or "").strip()
+        text = text.replace("/scard", "").strip()
+
+    # Extract photo from replied message first, else current message
+    photo = None
+    if reply and reply.photo:
+        photo = reply.photo
+    elif update.message.photo:
+        photo = update.message.photo
 
     p_obj = None
     if photo:
@@ -1057,6 +1083,9 @@ async def cmd_scard(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     clean_name = clean_card_name(char_name)
 
+    # Load fresh DB from disk so we NEVER overwrite or delete old cards!
+    lookism_cards_db = load_lookism_cards_db()
+
     lookism_cards_db[char_name] = {
         "name": char_name,
         "clean_name": clean_name,
@@ -1072,8 +1101,12 @@ async def cmd_scard(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Failed to save database file: `{e}`")
         return
 
-    if file_unique_id:
-        lookism_hash_index[file_unique_id] = clean_name
+    # Re-index RAM memory instantly
+    lookism_hash_index.clear()
+    for c_name, c_info in lookism_cards_db.items():
+        f_id = c_info.get("file_unique_id")
+        if f_id:
+            lookism_hash_index[f_id] = clean_card_name(c_info.get("name", c_name))
 
     await update.message.reply_text(
         f"✅ **Card Added Successfully to Database!** 🎉\n\n"
@@ -1082,6 +1115,57 @@ async def cmd_scard(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• **Tier / Worth:** `{tier_info} | {worth_info}`\n"
         f"• **Photo Unique ID:** `{file_unique_id or 'None'}`\n\n"
         f"📊 *Total Cards in DB:* `{len(lookism_cards_db)}`",
+        parse_mode='Markdown'
+    )
+
+async def cmd_dcard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global lookism_cards_db, lookism_hash_index
+    user = update.effective_user
+    if OWNER_ID != 0 and user.id != OWNER_ID:
+        await update.message.reply_text("🚫 Access Denied!")
+        return
+
+    args = context.args
+    if not args:
+        await update.message.reply_text(
+            "⚠️ **Usage:** `/dcard <card_name>`\n\n"
+            "Aap database se kisi bhi card ko uske naam se delete kar sakte hain (e.g., `/dcard Takuma Arashimaya`).",
+            parse_mode='Markdown'
+        )
+        return
+
+    query = " ".join(args).strip().lower()
+    lookism_cards_db = load_lookism_cards_db()
+
+    found_key = None
+    for k in lookism_cards_db.keys():
+        if k.lower() == query or query in k.lower():
+            found_key = k
+            break
+
+    if not found_key:
+        await update.message.reply_text(f"❌ Card matching `{query}` database mein nahi mila!")
+        return
+
+    deleted_card = lookism_cards_db.pop(found_key)
+
+    try:
+        with open(LOOKISM_DB_FILE, "w", encoding="utf-8") as f:
+            json.dump(lookism_cards_db, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        await update.message.reply_text(f"❌ Failed to save database file: `{e}`")
+        return
+
+    lookism_hash_index.clear()
+    for c_name, c_info in lookism_cards_db.items():
+        f_id = c_info.get("file_unique_id")
+        if f_id:
+            lookism_hash_index[f_id] = clean_card_name(c_info.get("name", c_name))
+
+    await update.message.reply_text(
+        f"🗑️ **Card Deleted Successfully!**\n\n"
+        f"• **Deleted Card:** `{found_key}`\n"
+        f"• **Remaining Cards in DB:** `{len(lookism_cards_db)}`",
         parse_mode='Markdown'
     )
 
@@ -1772,6 +1856,7 @@ async def main():
         telegram_app.add_handler(CommandHandler("dbdwn", cmd_dbdwn))
         telegram_app.add_handler(CommandHandler("dbup", cmd_dbup))
         telegram_app.add_handler(CommandHandler("scard", cmd_scard))
+        telegram_app.add_handler(CommandHandler("dcard", cmd_dcard))
         telegram_app.add_handler(CommandHandler("addacc", cmd_addacc))
         telegram_app.add_handler(CommandHandler("addsession", cmd_addsession))
         telegram_app.add_handler(CommandHandler("autoplay", cmd_autoplay))
