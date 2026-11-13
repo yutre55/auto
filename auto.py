@@ -982,21 +982,17 @@ async def cmd_scard(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🚫 Access Denied!")
         return
 
-    reply = update.message.reply_to_message
-    if not reply or not reply.photo:
-        if not update.message.photo:
-            await update.message.reply_text(
-                "⚠️ **Usage:** Kripya card ki photo ke sath ya card message par reply karke `/scard` command send karein.",
-                parse_mode='Markdown'
-            )
-            return
-        target_msg = update.message
-    else:
-        target_msg = reply
+    # Supports reply, forwarded message, or direct upload in same message
+    target_msg = update.message.reply_to_message if update.message.reply_to_message else update.message
 
-    text = (target_msg.text or target_msg.caption or "").strip()
-    if not text:
-        await update.message.reply_text("⚠️ Message mein card details (Name, Tier, Worth, etc.) nahi mili!")
+    text = (target_msg.text or target_msg.caption or update.message.text or update.message.caption or "").strip()
+    photo = target_msg.photo or update.message.photo
+
+    if not text and not photo:
+        await update.message.reply_text(
+            "⚠️ **Usage:** Kripya card message ko forward karein, photo upload karein, ya message par reply karke `/scard` send karein.",
+            parse_mode='Markdown'
+        )
         return
 
     char_name = ""
@@ -1019,8 +1015,8 @@ async def cmd_scard(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Card name extract nahi ho paya! Text mein 'Name: <Name>' hona chahiye.")
         return
 
-    file_unique_id = target_msg.photo.file_unique_id if target_msg.photo else ""
-    file_id = target_msg.photo.file_id if target_msg.photo else ""
+    file_unique_id = photo.file_unique_id if photo else ""
+    file_id = photo.file_id if photo else ""
 
     clean_name = clean_card_name(char_name)
 
@@ -1038,6 +1034,19 @@ async def cmd_scard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Failed to save to database file: `{e}`")
         return
+
+    if file_unique_id:
+        lookism_hash_index[file_unique_id] = clean_name
+
+    await update.message.reply_text(
+        f"✅ **Card Saved Successfully via /scard!** 🎉\n\n"
+        f"• **Original Name:** `{char_name}`\n"
+        f"• **Clean Name (Draft):** `{clean_name}`\n"
+        f"• **Tier / Worth:** `{tier_info} | {worth_info}`\n"
+        f"• **Photo Hash:** `{file_unique_id or 'None'}`\n\n"
+        "⚡ *Database aur memory index update ho gaye hain!*",
+        parse_mode='Markdown'
+    )
 
     if file_unique_id:
         lookism_hash_index[file_unique_id] = clean_name
