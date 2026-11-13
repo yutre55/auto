@@ -57,15 +57,6 @@ def load_lookism_cards_db() -> dict:
             pass
     return {}
 
-lookism_cards_db = load_lookism_cards_db()
-lookism_hash_index: Dict[str, str] = {}
-for c_name, c_info in lookism_cards_db.items():
-    f_id = c_info.get("file_unique_id")
-    if f_id:
-        lookism_hash_index[f_id] = clean_card_name(c_info.get("name", c_name))
-
-logger.info(f"⚡ Loaded and indexed {len(lookism_hash_index)} card photo hashes into memory for ultra-fast sniping!")
-
 def clean_card_name(raw_name: str) -> str:
     if not raw_name:
         return ""
@@ -81,6 +72,15 @@ def clean_card_name(raw_name: str) -> str:
             text = f"{parts[0]} {parts[1]}"
 
     return text.strip()
+
+lookism_cards_db = load_lookism_cards_db()
+lookism_hash_index: Dict[str, str] = {}
+for c_name, c_info in lookism_cards_db.items():
+    f_id = c_info.get("file_unique_id")
+    if f_id:
+        lookism_hash_index[f_id] = clean_card_name(c_info.get("name", c_name))
+
+logger.info(f"⚡ Loaded and indexed {len(lookism_hash_index)} card photo hashes into memory for ultra-fast sniping!")
 
 async def save_telegram_draft(client: Client, chat_id: int, text: str) -> bool:
     try:
