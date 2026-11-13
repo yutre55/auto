@@ -1618,7 +1618,7 @@ async def handle_private_states(update: Update, context: ContextTypes.DEFAULT_TY
             parse_mode='Markdown'
         )
 
-    elif step == "waiting_for_card_message":
+    elif step == "waiting_for_card_details":
         target_msg = update.message.reply_to_message if update.message.reply_to_message else update.message
         msg_text = (target_msg.text or target_msg.caption or update.message.text or update.message.caption or "").strip()
         photo = target_msg.photo or update.message.photo
