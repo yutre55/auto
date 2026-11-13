@@ -1754,7 +1754,7 @@ async def main():
         telegram_app.add_handler(CommandHandler("chats", cmd_chats))
         telegram_app.add_handler(CommandHandler("groups", cmd_chats))
         telegram_app.add_handler(CommandHandler("stats", cmd_stats))
-        telegram_app.add_handler(MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, handle_private_states))
+        telegram_app.add_handler(MessageHandler((tg_filters.TEXT | tg_filters.PHOTO) & ~tg_filters.COMMAND, handle_private_states))
 
         try:
             await telegram_app.initialize()
