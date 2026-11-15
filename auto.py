@@ -85,18 +85,19 @@ def clean_card_name(raw_name: str) -> str:
             sub_parts.append(p)
         parts = sub_parts
 
+    res = text.strip()
     if len(parts) >= 2:
         first_name = parts[0]
         surname = parts[-1]
         # Rule: By default use surname (Lee, Kim), but if surname is longer than first name (Arashimaya > Takuma), use first name
         if len(surname) > len(first_name):
-            return first_name
+            res = first_name
         else:
-            return surname
+            res = surname
     elif len(parts) == 1:
-        return parts[0]
+        res = parts[0]
 
-    return text.strip()
+    return res.lower().strip()
 
 def migrate_and_clean_lookism_db():
     if not os.path.exists(LOOKISM_DB_FILE):
@@ -605,7 +606,7 @@ def register_word_seek_handler(client: Client):
                 return
 
             # -------------------------------------------------------------
-            # CASE 2: CARD DROP PHOTO ("recruit has appeared")
+            # CASE 2: CARD DROP PHOTO (Matches all tiers: Common, Rare, Epic, Legendary, Heroic, Mythic, Celestial, Eternal, Primordial, etc.)
             # -------------------------------------------------------------
             is_card_drop_msg = bool(message.photo) and (
                 "appeared" in text_lower
@@ -617,7 +618,7 @@ def register_word_seek_handler(client: Client):
                 active_recruits_per_chat[chat_id] = now
                 char_name = ""
 
-                # 1. Lookup via Photo Hash in memory index (O(1) speed)
+                # 1. Lookup via Photo Hash in RAM memory index (0.001s speed)
                 if message.photo:
                     file_unique_id = message.photo.file_unique_id
                     char_name = lookism_hash_index.get(file_unique_id, "")
@@ -629,8 +630,9 @@ def register_word_seek_handler(client: Client):
                 if char_name:
                     clean_name = clean_card_name(char_name)
                     draft_text = f"/recruit {clean_name}"
+                    # MTProto SaveDraft automatically clears any existing text typed by user and sets /recruit <name>
                     await save_telegram_draft(c, chat_id, draft_text)
-                    logger.info(f"📝 [LOOKISM DRAFT SET FROM RAM INDEX!] Saved '{draft_text}' in group '{chat_title}'")
+                    logger.info(f"📝 [LOOKISM DRAFT INTERRUPT & SET!] Saved '{draft_text}' in group '{chat_title}'")
                 else:
                     await save_telegram_draft(c, chat_id, "/recruit ")
                 return
