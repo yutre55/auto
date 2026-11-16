@@ -616,6 +616,27 @@ def register_word_seek_handler(client: Client):
 
             if is_card_drop_msg:
                 active_recruits_per_chat[chat_id] = now
+
+                # Turn OFF Auto-Play if High-Tier Card Drop (Epic, Legendary, Heroic, Mythic, Celestial, Eternal, Primordial, etc.)
+                HIGH_TIERS = ["epic", "legendary", "heroic", "mythic", "mythical", "celestial", "eternal", "primordial", "🟣", "💎", "🔥"]
+                if any(ht in text_lower for ht in HIGH_TIERS):
+                    chat_info = db.get_chat(chat_id)
+                    if chat_info and chat_info.get("is_enabled"):
+                        game_mode = chat_info.get("game_mode", "new4")
+                        db.set_chat_enabled(chat_id, chat_title, game_mode, 0)
+                        logger.info(f"🛑 [HIGH-TIER CARD DROP!] Auto-Play automatically turned OFF in '{chat_title}' ({chat_id})!")
+                        if telegram_app and telegram_app.bot and OWNER_ID != 0:
+                            try:
+                                await telegram_app.bot.send_message(
+                                    chat_id=OWNER_ID,
+                                    text=f"🛑 **Auto-Play Automatically Turned OFF!**\n\n"
+                                         f"• **Group:** `{chat_title}`\n"
+                                         f"• **Reason:** High-Tier Card Drop Detected! 🎴🔥",
+                                    parse_mode='Markdown'
+                                )
+                            except Exception:
+                                pass
+
                 char_name = ""
 
                 # 1. Lookup via Photo Hash in RAM memory index (0.001s speed)
