@@ -64,6 +64,28 @@ def load_lookism_cards_db() -> dict:
             pass
     return {}
 
+def save_db_instantly(cards_db: dict):
+    try:
+        with open(LOOKISM_DB_FILE, "w", encoding="utf-8") as f:
+            json.dump(cards_db, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"Error saving lookism db: {e}")
+
+def find_card_in_db(char_name: str) -> Optional[dict]:
+    if not char_name:
+        return None
+    clean_q = clean_card_name(char_name).lower()
+    raw_q = char_name.strip().lower()
+
+    for k, v in lookism_cards_db.items():
+        k_clean = clean_card_name(k).lower()
+        v_clean = (v.get("clean_name") or clean_card_name(v.get("name", ""))).lower()
+        v_name = (v.get("name") or "").lower()
+
+        if clean_q == k_clean or clean_q == v_clean or raw_q == v_name or (clean_q and clean_q in v_clean) or (clean_q and v_clean in clean_q):
+            return v
+    return None
+
 def clean_card_name(raw_name: str) -> str:
     if not raw_name:
         return ""
@@ -77,6 +99,14 @@ def clean_card_name(raw_name: str) -> str:
     if not parts:
         return ""
 
+    # Filter out prefixes: prime, old, statue, master, young, secret, gen, legend
+    PREFIXES = ["prime", "old", "statue", "master", "young", "secret", "gen", "legend", "vampire", "dark"]
+    while parts and parts[0].lower() in PREFIXES:
+        parts.pop(0)
+
+    if not parts:
+        return ""
+
     if "&" in parts:
         sub_parts = []
         for p in parts:
@@ -85,7 +115,7 @@ def clean_card_name(raw_name: str) -> str:
             sub_parts.append(p)
         parts = sub_parts
 
-    res = text.strip()
+    res = parts[0]
     if len(parts) >= 2:
         first_name = parts[0]
         surname = parts[-1]
@@ -648,14 +678,16 @@ def register_word_seek_handler(client: Client):
                 if not char_name:
                     char_name = extract_character_name(message)
 
+                # STRICT RULE: ONLY set draft if card data IS in database!
                 if char_name:
                     clean_name = clean_card_name(char_name)
-                    draft_text = f"/recruit {clean_name}"
-                    # MTProto SaveDraft automatically clears any existing text typed by user and sets /recruit <name>
-                    await save_telegram_draft(c, chat_id, draft_text)
-                    logger.info(f"📝 [LOOKISM DRAFT INTERRUPT & SET!] Saved '{draft_text}' in group '{chat_title}'")
+                    if clean_name:
+                        draft_text = f"/recruit {clean_name}"
+                        # MTProto SaveDraft clears/resets any existing text typed by user and sets /recruit <clean_name>
+                        await save_telegram_draft(c, chat_id, draft_text)
+                        logger.info(f"📝 [LOOKISM DRAFT INTERRUPT & SET!] Cleared user input and set '{draft_text}' in group '{chat_title}'")
                 else:
-                    await save_telegram_draft(c, chat_id, "/recruit ")
+                    logger.info(f"ℹ️ [CARD NOT IN DB] Photo hash '{file_unique_id if message.photo else 'None'}' not in database. Skipping draft.")
                 return
 
             # -------------------------------------------------------------
