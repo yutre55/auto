@@ -647,25 +647,8 @@ def register_word_seek_handler(client: Client):
             if is_card_drop_msg:
                 active_recruits_per_chat[chat_id] = now
 
-                # Turn OFF Auto-Play if High-Tier Card Drop (Epic, Legendary, Heroic, Mythic, Celestial, Eternal, Primordial, etc.)
                 HIGH_TIERS = ["epic", "legendary", "heroic", "mythic", "mythical", "celestial", "eternal", "primordial", "🟣", "💎", "🔥"]
-                if any(ht in text_lower for ht in HIGH_TIERS):
-                    chat_info = db.get_chat(chat_id)
-                    if chat_info and chat_info.get("is_enabled"):
-                        game_mode = chat_info.get("game_mode", "new4")
-                        db.set_chat_enabled(chat_id, chat_title, game_mode, 0)
-                        logger.info(f"🛑 [HIGH-TIER CARD DROP!] Auto-Play automatically turned OFF in '{chat_title}' ({chat_id})!")
-                        if telegram_app and telegram_app.bot and OWNER_ID != 0:
-                            try:
-                                await telegram_app.bot.send_message(
-                                    chat_id=OWNER_ID,
-                                    text=f"🛑 **Auto-Play Automatically Turned OFF!**\n\n"
-                                         f"• **Group:** `{chat_title}`\n"
-                                         f"• **Reason:** High-Tier Card Drop Detected! 🎴🔥",
-                                    parse_mode='Markdown'
-                                )
-                            except Exception:
-                                pass
+                is_high_tier = any(ht in text_lower for ht in HIGH_TIERS)
 
                 char_name = ""
 
@@ -674,20 +657,64 @@ def register_word_seek_handler(client: Client):
                     file_unique_id = message.photo.file_unique_id
                     char_name = lookism_hash_index.get(file_unique_id, "")
 
-                # 2. Fallback to inline buttons or text extraction
-                if not char_name:
-                    char_name = extract_character_name(message)
-
-                # STRICT RULE: ONLY set draft if card data IS in database!
+                # 2. Fallback to text/inline buttons extraction & DB match
+                matched_card = None
                 if char_name:
-                    clean_name = clean_card_name(char_name)
+                    matched_card = find_card_in_db(char_name)
+                else:
+                    extracted = extract_character_name(message)
+                    if extracted:
+                        matched_card = find_card_in_db(extracted)
+                        if matched_card:
+                            char_name = matched_card.get("clean_name") or matched_card.get("name") or extracted
+                            # Self-learn photo hash so future drops match in 0.001s!
+                            if message.photo and message.photo.file_unique_id:
+                                f_uid = message.photo.file_unique_id
+                                clean_c = clean_card_name(char_name)
+                                lookism_hash_index[f_uid] = clean_c
+                                matched_card["file_unique_id"] = f_uid
+                                save_db_instantly(lookism_cards_db)
+                                logger.info(f"🧠 [SELF-LEARNED HASH!] Automatically mapped photo hash '{f_uid}' to '{clean_c}'")
+
+                # Check description tier if text_lower didn't catch tier
+                if not is_high_tier and matched_card:
+                    desc_lower = matched_card.get("description", "").lower()
+                    is_high_tier = any(ht in desc_lower for ht in HIGH_TIERS)
+
+                # STRICT RULE: Ignore Common & Rare cards! ONLY draft if Epic or Higher!
+                if not is_high_tier:
+                    logger.info(f"ℹ️ [COMMON/RARE CARD IGNORED] Card '{char_name or 'Unknown'}' is Common/Rare. Skipping draft.")
+                    return
+
+                # If High-Tier (Epic or higher), Turn OFF Auto-Play to prevent distracting word guesses
+                chat_info = db.get_chat(chat_id)
+                if chat_info and chat_info.get("is_enabled"):
+                    game_mode = chat_info.get("game_mode", "new4")
+                    db.set_chat_enabled(chat_id, chat_title, game_mode, 0)
+                    logger.info(f"🛑 [HIGH-TIER CARD DROP!] Auto-Play automatically turned OFF in '{chat_title}' ({chat_id})!")
+                    if telegram_app and telegram_app.bot and OWNER_ID != 0:
+                        try:
+                            await telegram_app.bot.send_message(
+                                chat_id=OWNER_ID,
+                                text=f"🛑 **Auto-Play Automatically Turned OFF!**\n\n"
+                                     f"• **Group:** `{chat_title}`\n"
+                                     f"• **Reason:** High-Tier Card Drop Detected! 🎴🔥",
+                                parse_mode='Markdown'
+                            )
+                        except Exception:
+                            pass
+
+                # STRICT RULE: ONLY set draft if card data IS verified in database!
+                if matched_card or char_name:
+                    raw_c_name = matched_card.get("name") if matched_card else char_name
+                    clean_name = clean_card_name(raw_c_name)
                     if clean_name:
                         draft_text = f"/recruit {clean_name}"
                         # MTProto SaveDraft clears/resets any existing text typed by user and sets /recruit <clean_name>
                         await save_telegram_draft(c, chat_id, draft_text)
-                        logger.info(f"📝 [LOOKISM DRAFT INTERRUPT & SET!] Cleared user input and set '{draft_text}' in group '{chat_title}'")
+                        logger.info(f"📝 [EPIC+ DRAFT INTERRUPT & SET!] Cleared user input and set '{draft_text}' in group '{chat_title}'")
                 else:
-                    logger.info(f"ℹ️ [CARD NOT IN DB] Photo hash '{file_unique_id if message.photo else 'None'}' not in database. Skipping draft.")
+                    logger.info(f"ℹ️ [CARD NOT IN DB YET] Photo hash '{message.photo.file_unique_id if message.photo else 'None'}' not in DB. Skipping draft until DB match.")
                 return
 
             # -------------------------------------------------------------
@@ -732,6 +759,9 @@ def register_word_seek_handler(client: Client):
             or "/30 guesses" in text_lower
             or "already a game" in text_lower
             or "game started!" in text_lower
+            or "guessed it correctly" in text_lower
+            or "correct word:" in text_lower
+            or "start with /new" in text_lower
         )
 
         if is_wordseek:
@@ -763,8 +793,12 @@ async def process_word_seek_response(client: Client, chat_id: int, text: str):
             logger.error(f"Failed to reset game in {chat_id}: {e}")
         return
 
-    # 2. Restart on completion / win / game over / game ended / the word was
-    if any(kw in text_lower for kw in ["congratulations", "congrats!", "guessed it correctly", "completed", "game over", "won!", "game ended", "start a new game", "the word was", "added", "leaderboard"]):
+    # 2. Restart on completion / win / game over / game ended / correct word / start with /new4
+    if any(kw in text_lower for kw in [
+        "congratulations", "congrats!", "guessed it correctly", "correct word:",
+        "completed", "game over", "won!", "game ended", "start a new game",
+        "the word was", "added", "leaderboard", "start with /new4", "start with /new5", "start with /new"
+    ]):
         db.increment_stats(chat_id, solved_word=True, completed_game=True)
         logger.info(f"🏆 Game ended in {chat_id}! Resetting used words and restarting /{game_mode}...")
         used_words_per_chat[chat_id] = set()
