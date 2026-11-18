@@ -540,8 +540,78 @@ def extract_character_name(message_or_text) -> str:
     return ""
 
 active_recruits_per_chat: Dict[int, float] = {}  # chat_id -> drop timestamp
+active_high_drops: Dict[int, dict] = {}           # chat_id -> drop metadata dict
+
+async def draft_retry_worker(c: Client):
+    logger.info("⚡ Dedicated Draft Verification & Retry Worker started (polling every 0.3s)...")
+    while True:
+        try:
+            await asyncio.sleep(0.3)
+            now = time.time()
+            chats_to_remove = []
+
+            for chat_id, drop_data in list(active_high_drops.items()):
+                if now - drop_data.get("timestamp", 0) > 45:
+                    chats_to_remove.append(chat_id)
+                    continue
+
+                if drop_data.get("drafted"):
+                    continue
+
+                msg_id = drop_data.get("msg_id")
+                photo_obj = drop_data.get("photo")
+
+                try:
+                    latest_msg = await c.get_messages(chat_id, msg_id)
+                    if not latest_msg:
+                        continue
+
+                    text = (latest_msg.text or latest_msg.caption or "").strip()
+                    text_lower = text.lower()
+
+                    if any(kw in text_lower for kw in ["in your crew", "crew now", "walked off", "too late"]):
+                        drop_data["drafted"] = True
+                        chats_to_remove.append(chat_id)
+                        await save_telegram_draft(c, chat_id, "")
+                        continue
+
+                    char_name = extract_character_name(latest_msg)
+                    if not char_name and photo_obj:
+                        char_name = lookism_hash_index.get(photo_obj.file_unique_id, "")
+
+                    matched_card = None
+                    if char_name:
+                        matched_card = find_card_in_db(char_name)
+
+                    if matched_card or char_name:
+                        raw_c_name = matched_card.get("name") if matched_card else char_name
+                        clean_name = clean_card_name(raw_c_name)
+                        if clean_name:
+                            draft_text = f"/recruit {clean_name}"
+                            await save_telegram_draft(c, chat_id, draft_text)
+                            drop_data["drafted"] = True
+                            logger.info(f"⚡ [BACKGROUND RETRY WORKER SUCCESS!] Reset input & drafted '{draft_text}' in chat {chat_id}")
+
+                            if photo_obj and photo_obj.file_unique_id:
+                                f_uid = photo_obj.file_unique_id
+                                lookism_hash_index[f_uid] = clean_name
+                                if matched_card:
+                                    matched_card["file_unique_id"] = f_uid
+                                    save_db_instantly(lookism_cards_db)
+                except Exception as e:
+                    logger.debug(f"Retry worker fetch error in {chat_id}: {e}")
+
+            for cid in chats_to_remove:
+                active_high_drops.pop(cid, None)
+
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error(f"Error in draft_retry_worker loop: {e}")
+            await asyncio.sleep(1.0)
 
 def register_word_seek_handler(client: Client):
+    asyncio.create_task(draft_retry_worker(client))
     @client.on_message(p_filters.me & p_filters.group)
     async def user_manual_message_listener(c: Client, message: PMessage):
         chat_id = message.chat.id
@@ -646,6 +716,12 @@ def register_word_seek_handler(client: Client):
 
             if is_card_drop_msg:
                 active_recruits_per_chat[chat_id] = now
+                active_high_drops[chat_id] = {
+                    "msg_id": message.id,
+                    "photo": message.photo,
+                    "timestamp": now,
+                    "drafted": False
+                }
 
                 HIGH_TIERS = ["epic", "legendary", "heroic", "mythic", "mythical", "celestial", "eternal", "primordial", "🟣", "💎", "🔥"]
                 is_high_tier = any(ht in text_lower for ht in HIGH_TIERS)
@@ -712,6 +788,7 @@ def register_word_seek_handler(client: Client):
                         draft_text = f"/recruit {clean_name}"
                         # MTProto SaveDraft clears/resets any existing text typed by user and sets /recruit <clean_name>
                         await save_telegram_draft(c, chat_id, draft_text)
+                        active_high_drops[chat_id]["drafted"] = True
                         logger.info(f"📝 [EPIC+ DRAFT INTERRUPT & SET!] Cleared user input and set '{draft_text}' in group '{chat_title}'")
                 else:
                     logger.info(f"ℹ️ [CARD NOT IN DB YET] Photo hash '{message.photo.file_unique_id if message.photo else 'None'}' not in DB. Skipping draft until DB match.")
