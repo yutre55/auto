@@ -53,39 +53,6 @@ logger = logging.getLogger("WordSeekAutoBot")
 
 import unicodedata
 
-LOOKISM_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "lookism_cards_db.json")
-
-def load_lookism_cards_db() -> dict:
-    if os.path.exists(LOOKISM_DB_FILE):
-        try:
-            with open(LOOKISM_DB_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            pass
-    return {}
-
-def save_db_instantly(cards_db: dict):
-    try:
-        with open(LOOKISM_DB_FILE, "w", encoding="utf-8") as f:
-            json.dump(cards_db, f, indent=2, ensure_ascii=False)
-    except Exception as e:
-        logger.error(f"Error saving lookism db: {e}")
-
-def find_card_in_db(char_name: str) -> Optional[dict]:
-    if not char_name:
-        return None
-    clean_q = clean_card_name(char_name).lower()
-    raw_q = char_name.strip().lower()
-
-    for k, v in lookism_cards_db.items():
-        k_clean = clean_card_name(k).lower()
-        v_clean = (v.get("clean_name") or clean_card_name(v.get("name", ""))).lower()
-        v_name = (v.get("name") or "").lower()
-
-        if clean_q == k_clean or clean_q == v_clean or raw_q == v_name or (clean_q and clean_q in v_clean) or (clean_q and v_clean in clean_q):
-            return v
-    return None
-
 def clean_card_name(raw_name: str) -> str:
     if not raw_name:
         return ""
@@ -128,41 +95,6 @@ def clean_card_name(raw_name: str) -> str:
         res = parts[0]
 
     return res.lower().strip()
-
-def migrate_and_clean_lookism_db():
-    if not os.path.exists(LOOKISM_DB_FILE):
-        return
-    try:
-        with open(LOOKISM_DB_FILE, "r", encoding="utf-8") as f:
-            db_data = json.load(f)
-
-        updated = False
-        new_db = {}
-        for k, v in db_data.items():
-            original_name = v.get("name", k)
-            cleaned = clean_card_name(original_name)
-            v["name"] = original_name
-            v["clean_name"] = cleaned
-            new_db[k] = v
-            if "clean_name" not in v or v["clean_name"] != cleaned:
-                updated = True
-
-        if updated:
-            with open(LOOKISM_DB_FILE, "w", encoding="utf-8") as f:
-                json.dump(new_db, f, indent=2, ensure_ascii=False)
-            print("🧹 Normalized all card clean_names in lookism_cards_db.json!")
-    except Exception as e:
-        print(f"Error migrating lookism db: {e}")
-
-migrate_and_clean_lookism_db()
-lookism_cards_db = load_lookism_cards_db()
-lookism_hash_index: Dict[str, str] = {}
-for c_name, c_info in lookism_cards_db.items():
-    f_id = c_info.get("file_unique_id")
-    if f_id:
-        lookism_hash_index[f_id] = clean_card_name(c_info.get("name", c_name))
-
-logger.info(f"⚡ Loaded and indexed {len(lookism_hash_index)} card photo hashes into memory for ultra-fast sniping!")
 
 async def save_telegram_draft(client: Client, chat_id: int, text: str) -> bool:
     try:
