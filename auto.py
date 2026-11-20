@@ -482,7 +482,18 @@ def extract_character_name(message_or_text) -> str:
     elif isinstance(message_or_text, str):
         text = message_or_text
 
-    # 1. Check Inline Keyboard buttons text or callback data instantly in milliseconds
+    # 1. User's exact regex matching: (?:name|character)\s*[:：]\s*(.+)
+    if text:
+        match = re.search(r"(?:name|character)\s*[:：]\s*(.+)", text, re.IGNORECASE)
+        if match:
+            val = match.group(1).strip()
+            for stop in ["Code:", "code:", "Tier:", "tier:", "Worth:", "worth:"]:
+                if stop in val:
+                    val = val.split(stop)[0].strip()
+            if val and len(val) < 50:
+                return val.strip()
+
+    # 2. Check Inline Keyboard buttons text or callback data instantly
     if message and hasattr(message, "reply_markup") and message.reply_markup and hasattr(message.reply_markup, "inline_keyboard"):
         for row in message.reply_markup.inline_keyboard:
             for btn in row:
@@ -502,40 +513,13 @@ def extract_character_name(message_or_text) -> str:
                         if cleaned.lower() not in ["claim", "recruit", "grab", "catch", "card", "next", "back", "buy", "view"]:
                             return cleaned
 
-    if not text:
-        return ""
-
-    text_clean = text.replace("*", "").replace("`", "").replace("_", "").replace("~", "")
-
-    # Pattern A: "recruit <Character Name> has appeared" (Used by @Gnejdjdjbot & drop bots!)
-    mA = re.search(r"recruit\s+([A-Za-z0-9\s'&-]+?)\s+has\s+appeared", text_clean, re.IGNORECASE)
-    if mA:
-        val = mA.group(1).strip()
-        if val and len(val) < 50:
-            return val
-
-    # Pattern B: "Name: <Name>" or "Character: <Name>"
-    mB = re.search(r"(?:name|character|char)[:\s]+([^\n\r]+?)(?:\s+code:|\s+tier:|\s+worth:|\n|\r|$)", text_clean, re.IGNORECASE)
-    if mB:
-        val = mB.group(1).strip()
-        for stop in ["code:", "Code:", "tier:", "Tier:", "worth:", "Worth:"]:
-            if stop in val:
-                val = val.split(stop)[0].strip()
-        if val and len(val) < 50:
-            return val
-
-    # Pattern C: Line scan
-    for line in text_clean.split("\n"):
-        line_s = line.strip()
-        if line_s.lower().startswith("name:") or line_s.lower().startswith("character:"):
-            parts = line_s.split(":", 1)
-            if len(parts) > 1:
-                val = parts[1].strip()
-                for stop in ["Code:", "code:", "Tier:", "tier:", "Worth:", "worth:"]:
-                    if stop in val:
-                        val = val.split(stop)[0].strip()
-                if val and len(val) < 50:
-                    return val
+    # 3. Pattern Fallback: "recruit <Character Name> has appeared"
+    if text:
+        mA = re.search(r"recruit\s+([A-Za-z0-9\s'&-]+?)\s+has\s+appeared", text, re.IGNORECASE)
+        if mA:
+            val = mA.group(1).strip()
+            if val and len(val) < 50:
+                return val
 
     return ""
 
@@ -543,10 +527,10 @@ active_recruits_per_chat: Dict[int, float] = {}  # chat_id -> drop timestamp
 active_high_drops: Dict[int, dict] = {}           # chat_id -> drop metadata dict
 
 async def draft_retry_worker(c: Client):
-    logger.info("⚡ Dedicated Draft Verification & Retry Worker started (polling every 0.3s)...")
+    logger.info("⚡ MTProto Fast Network Event Worker started (polling every 0.15s)...")
     while True:
         try:
-            await asyncio.sleep(0.3)
+            await asyncio.sleep(0.15)
             now = time.time()
             chats_to_remove = []
 
@@ -575,29 +559,14 @@ async def draft_retry_worker(c: Client):
                         await save_telegram_draft(c, chat_id, "")
                         continue
 
-                    char_name = extract_character_name(latest_msg)
-                    if not char_name and photo_obj:
-                        char_name = lookism_hash_index.get(photo_obj.file_unique_id, "")
-
-                    matched_card = None
-                    if char_name:
-                        matched_card = find_card_in_db(char_name)
-
-                    if matched_card or char_name:
-                        raw_c_name = matched_card.get("name") if matched_card else char_name
+                    raw_c_name = extract_character_name(latest_msg)
+                    if raw_c_name:
                         clean_name = clean_card_name(raw_c_name)
                         if clean_name:
                             draft_text = f"/recruit {clean_name}"
                             await save_telegram_draft(c, chat_id, draft_text)
                             drop_data["drafted"] = True
                             logger.info(f"⚡ [BACKGROUND RETRY WORKER SUCCESS!] Reset input & drafted '{draft_text}' in chat {chat_id}")
-
-                            if photo_obj and photo_obj.file_unique_id:
-                                f_uid = photo_obj.file_unique_id
-                                lookism_hash_index[f_uid] = clean_name
-                                if matched_card:
-                                    matched_card["file_unique_id"] = f_uid
-                                    save_db_instantly(lookism_cards_db)
                 except Exception as e:
                     logger.debug(f"Retry worker fetch error in {chat_id}: {e}")
 
@@ -714,7 +683,7 @@ def register_word_seek_handler(client: Client):
                 or "crew" in text_lower
             )
 
-            if is_card_drop_msg:
+            if is_card_drop_msg or ("name:" in text_lower or "character:" in text_lower):
                 active_recruits_per_chat[chat_id] = now
                 active_high_drops[chat_id] = {
                     "msg_id": message.id,
@@ -726,40 +695,9 @@ def register_word_seek_handler(client: Client):
                 HIGH_TIERS = ["epic", "legendary", "heroic", "mythic", "mythical", "celestial", "eternal", "primordial", "🟣", "💎", "🔥"]
                 is_high_tier = any(ht in text_lower for ht in HIGH_TIERS)
 
-                char_name = ""
-
-                # 1. Lookup via Photo Hash in RAM memory index (0.001s speed)
-                if message.photo:
-                    file_unique_id = message.photo.file_unique_id
-                    char_name = lookism_hash_index.get(file_unique_id, "")
-
-                # 2. Fallback to text/inline buttons extraction & DB match
-                matched_card = None
-                if char_name:
-                    matched_card = find_card_in_db(char_name)
-                else:
-                    extracted = extract_character_name(message)
-                    if extracted:
-                        matched_card = find_card_in_db(extracted)
-                        if matched_card:
-                            char_name = matched_card.get("clean_name") or matched_card.get("name") or extracted
-                            # Self-learn photo hash so future drops match in 0.001s!
-                            if message.photo and message.photo.file_unique_id:
-                                f_uid = message.photo.file_unique_id
-                                clean_c = clean_card_name(char_name)
-                                lookism_hash_index[f_uid] = clean_c
-                                matched_card["file_unique_id"] = f_uid
-                                save_db_instantly(lookism_cards_db)
-                                logger.info(f"🧠 [SELF-LEARNED HASH!] Automatically mapped photo hash '{f_uid}' to '{clean_c}'")
-
-                # Check description tier if text_lower didn't catch tier
-                if not is_high_tier and matched_card:
-                    desc_lower = matched_card.get("description", "").lower()
-                    is_high_tier = any(ht in desc_lower for ht in HIGH_TIERS)
-
                 # STRICT RULE: Ignore Common & Rare cards! ONLY draft if Epic or Higher!
                 if not is_high_tier:
-                    logger.info(f"ℹ️ [COMMON/RARE CARD IGNORED] Card '{char_name or 'Unknown'}' is Common/Rare. Skipping draft.")
+                    logger.info(f"ℹ️ [COMMON/RARE CARD IGNORED] Skipping draft for Common/Rare card.")
                     return
 
                 # If High-Tier (Epic or higher), Turn OFF Auto-Play to prevent distracting word guesses
@@ -780,18 +718,16 @@ def register_word_seek_handler(client: Client):
                         except Exception:
                             pass
 
-                # STRICT RULE: ONLY set draft if card data IS verified in database!
-                if matched_card or char_name:
-                    raw_c_name = matched_card.get("name") if matched_card else char_name
+                # Direct regex extraction using user's method: (?:name|character)\s*[:：]\s*(.+) (NO DB REQUIRED)
+                raw_c_name = extract_character_name(message)
+                if raw_c_name:
                     clean_name = clean_card_name(raw_c_name)
                     if clean_name:
                         draft_text = f"/recruit {clean_name}"
                         # MTProto SaveDraft clears/resets any existing text typed by user and sets /recruit <clean_name>
                         await save_telegram_draft(c, chat_id, draft_text)
                         active_high_drops[chat_id]["drafted"] = True
-                        logger.info(f"📝 [EPIC+ DRAFT INTERRUPT & SET!] Cleared user input and set '{draft_text}' in group '{chat_title}'")
-                else:
-                    logger.info(f"ℹ️ [CARD NOT IN DB YET] Photo hash '{message.photo.file_unique_id if message.photo else 'None'}' not in DB. Skipping draft until DB match.")
+                        logger.info(f"📝 [DIRECT REGEX DRAFT INTERRUPT & SET!] Cleared input and set '{draft_text}' in group '{chat_title}'")
                 return
 
             # -------------------------------------------------------------
