@@ -445,12 +445,13 @@ def extract_character_name(message_or_text) -> str:
                         if cleaned.lower() not in ["claim", "recruit", "grab", "catch", "card", "next", "back", "buy", "view"]:
                             return cleaned
 
-    # 3. Pattern Fallback: "recruit <Character Name> has appeared"
+    # 3. Pattern Fallback: "recruit <Character Name> has appeared" / "A wild <Character Name> appeared"
     if text:
-        mA = re.search(r"recruit\s+([A-Za-z0-9\s'&-]+?)\s+has\s+appeared", text, re.IGNORECASE)
+        mA = re.search(r"(?:wild|recruit|character|card)?\s*([A-Za-z0-9\s'&-]+?)\s+(?:has\s+)?appeared", text, re.IGNORECASE)
         if mA:
             val = mA.group(1).strip()
-            if val and len(val) < 50:
+            # Exclude generic words like "recruit", "card", "a wild recruit", etc.
+            if val and val.lower() not in ["recruit", "card", "a wild recruit", "character", "a wild"] and len(val) < 50:
                 return val
 
     return ""
@@ -578,16 +579,18 @@ def register_word_seek_handler(client: Client):
             sender_uname = (sender.username or "").lower() if sender else ""
             sender_name = (getattr(sender, "first_name", None) or getattr(sender, "title", None) or "").lower() if sender else ""
 
-            target_list = ["lookism_rec_bot", "gnejdjdjbot"]
+            target_keywords = ["lookism", "rec", "gnejdjdj", "nalla", "card", "bot"]
             if d_info and d_info.get("target_bot"):
                 for b in d_info["target_bot"].split(","):
                     b_clean = b.strip().lower().lstrip('@')
-                    if b_clean and b_clean not in target_list:
-                        target_list.append(b_clean)
+                    if b_clean:
+                        target_keywords.append(b_clean)
 
-            is_target_sender = any(
-                t in sender_uname or t in sender_name or "nalla" in sender_name
-                for t in target_list
+            sender_text_combined = f"{sender_uname} {sender_name}".lower()
+
+            # Match sender by username, display name, OR card spawn keywords in caption
+            is_target_sender = any(k in sender_text_combined for k in target_keywords) or (
+                getattr(sender, "is_bot", True) and ("appeared" in text_lower or "crew" in text_lower or "recruit" in text_lower)
             )
 
             if not is_target_sender:
@@ -627,30 +630,26 @@ def register_word_seek_handler(client: Client):
                 HIGH_TIERS = ["epic", "legendary", "heroic", "mythic", "mythical", "celestial", "eternal", "primordial", "🟣", "💎", "🔥"]
                 is_high_tier = any(ht in text_lower for ht in HIGH_TIERS)
 
-                # STRICT RULE: Ignore Common & Rare cards! ONLY draft if Epic or Higher!
-                if not is_high_tier:
-                    logger.info(f"ℹ️ [COMMON/RARE CARD IGNORED] Skipping draft for Common/Rare card.")
-                    return
-
                 # If High-Tier (Epic or higher), Turn OFF Auto-Play to prevent distracting word guesses
-                chat_info = db.get_chat(chat_id)
-                if chat_info and chat_info.get("is_enabled"):
-                    game_mode = chat_info.get("game_mode", "new4")
-                    db.set_chat_enabled(chat_id, chat_title, game_mode, 0)
-                    logger.info(f"🛑 [HIGH-TIER CARD DROP!] Auto-Play automatically turned OFF in '{chat_title}' ({chat_id})!")
-                    if telegram_app and telegram_app.bot and OWNER_ID != 0:
-                        try:
-                            await telegram_app.bot.send_message(
-                                chat_id=OWNER_ID,
-                                text=f"🛑 **Auto-Play Automatically Turned OFF!**\n\n"
-                                     f"• **Group:** `{chat_title}`\n"
-                                     f"• **Reason:** High-Tier Card Drop Detected! 🎴🔥",
-                                parse_mode='Markdown'
-                            )
-                        except Exception:
-                            pass
+                if is_high_tier:
+                    chat_info = db.get_chat(chat_id)
+                    if chat_info and chat_info.get("is_enabled"):
+                        game_mode = chat_info.get("game_mode", "new4")
+                        db.set_chat_enabled(chat_id, chat_title, game_mode, 0)
+                        logger.info(f"🛑 [HIGH-TIER CARD DROP!] Auto-Play automatically turned OFF in '{chat_title}' ({chat_id})!")
+                        if telegram_app and telegram_app.bot and OWNER_ID != 0:
+                            try:
+                                await telegram_app.bot.send_message(
+                                    chat_id=OWNER_ID,
+                                    text=f"🛑 **Auto-Play Automatically Turned OFF!**\n\n"
+                                         f"• **Group:** `{chat_title}`\n"
+                                         f"• **Reason:** High-Tier Card Drop Detected! 🎴🔥",
+                                    parse_mode='Markdown'
+                                )
+                            except Exception:
+                                pass
 
-                # Direct regex extraction using user's method: (?:name|character)\s*[:：]\s*(.+) (NO DB REQUIRED)
+                # Direct regex extraction (from message text, caption, or inline buttons)
                 raw_c_name = extract_character_name(message)
                 if raw_c_name:
                     clean_name = clean_card_name(raw_c_name)
@@ -659,7 +658,7 @@ def register_word_seek_handler(client: Client):
                         # MTProto SaveDraft clears/resets any existing text typed by user and sets /recruit <clean_name>
                         await save_telegram_draft(c, chat_id, draft_text)
                         active_high_drops[chat_id]["drafted"] = True
-                        logger.info(f"📝 [DIRECT REGEX DRAFT INTERRUPT & SET!] Cleared input and set '{draft_text}' in group '{chat_title}'")
+                        logger.info(f"📝 [NATURAL SPAWN DRAFT SET!] Saved '{draft_text}' in group '{chat_title}'")
                 return
 
             # -------------------------------------------------------------
