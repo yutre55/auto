@@ -401,6 +401,24 @@ class AutoWordDatabase:
 
 db = AutoWordDatabase(DB_PATH)
 
+LOOKISM_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "lookism_cards_db.json")
+
+def load_lookism_cards_db() -> Dict[str, str]:
+    mapping = {}
+    if os.path.exists(LOOKISM_DB_FILE):
+        try:
+            with open(LOOKISM_DB_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                for c_name, c_info in data.items():
+                    if isinstance(c_info, dict) and c_info.get("file_unique_id"):
+                        mapping[c_info["file_unique_id"]] = c_info.get("name") or c_name
+                logger.info(f"📚 Loaded {len(mapping)} card photo hashes from lookism_cards_db.json into auto.py!")
+        except Exception as e:
+            logger.error(f"Error loading lookism_cards_db.json: {e}")
+    return mapping
+
+lookism_unique_id_map: Dict[str, str] = load_lookism_cards_db()
+
 userbot: Optional[Client] = None
 telegram_app: Optional[Application] = None
 user_states: Dict[int, dict] = {}
@@ -414,12 +432,12 @@ def extract_character_name(message_or_text) -> str:
     elif isinstance(message_or_text, str):
         text = message_or_text
 
-    # 1. User's exact regex matching: (?:name|character)\s*[:：]\s*(.+)
+    # 1. User's exact regex matching: (?:name|character|имя|персонаж)\s*[:：]\s*(.+)
     if text:
-        match = re.search(r"(?:name|character)\s*[:：]\s*(.+)", text, re.IGNORECASE)
+        match = re.search(r"(?:name|character|имя|персонаж)\s*[:：]\s*(.+)", text, re.IGNORECASE)
         if match:
             val = match.group(1).strip()
-            for stop in ["Code:", "code:", "Tier:", "tier:", "Worth:", "worth:"]:
+            for stop in ["Code:", "code:", "Tier:", "tier:", "Worth:", "worth:", "Код:", "код:", "Тир:", "тир:"]:
                 if stop in val:
                     val = val.split(stop)[0].strip()
             if val and len(val) < 50:
@@ -492,7 +510,14 @@ async def draft_retry_worker(c: Client):
                         await save_telegram_draft(c, chat_id, "")
                         continue
 
-                    raw_c_name = extract_character_name(latest_msg)
+                    raw_c_name = ""
+                    f_unique_id = getattr(latest_msg.photo, "file_unique_id", None) if latest_msg.photo else None
+                    if f_unique_id and f_unique_id in lookism_unique_id_map:
+                        raw_c_name = lookism_unique_id_map[f_unique_id]
+
+                    if not raw_c_name:
+                        raw_c_name = extract_character_name(latest_msg)
+
                     if raw_c_name:
                         clean_name = clean_card_name(raw_c_name)
                         if clean_name:
@@ -550,8 +575,8 @@ def register_word_seek_handler(client: Client):
             except Exception:
                 pass
 
-    @client.on_message(p_filters.group)
-    @client.on_edited_message(p_filters.group)
+    @client.on_message(~p_filters.private)
+    @client.on_edited_message(~p_filters.private)
     async def universal_drecruit_tracker(c: Client, message: PMessage):
         try:
             if not message or not message.chat:
@@ -569,7 +594,10 @@ def register_word_seek_handler(client: Client):
                 return
 
             chat_title = message.chat.title or f"Group_{chat_id}"
-            text = (message.text or message.caption or "").strip()
+            raw_text = (message.text or message.caption or "").strip()
+            # Normalize fancy unicode fonts (Mathematical Italic, Bold, Script, etc.) to plain standard letters
+            normalized_text = unicodedata.normalize('NFKD', raw_text)
+            text_lower = normalized_text.lower()
             now = time.time()
 
             sender = message.from_user or message.sender_chat
@@ -588,20 +616,24 @@ def register_word_seek_handler(client: Client):
 
             sender_text_combined = f"{sender_uname} {sender_name}".lower()
 
-            # Match sender by username, display name, OR card spawn keywords in caption
+            # Match sender by username, display name, OR card spawn keywords in caption (English & Russian)
             is_target_sender = any(k in sender_text_combined for k in target_keywords) or (
-                getattr(sender, "is_bot", True) and ("appeared" in text_lower or "crew" in text_lower or "recruit" in text_lower)
+                getattr(sender, "is_bot", True) and (
+                    "appeared" in text_lower or "crew" in text_lower or "recruit" in text_lower or
+                    "появился" in text_lower or "появилась" in text_lower or "команду" in text_lower or "рекрут" in text_lower
+                )
             )
 
             if not is_target_sender:
                 return
 
-            text_lower = text.lower()
-
             # -------------------------------------------------------------
-            # CASE 1: CLAIMED / EXPIRED
+            # CASE 1: CLAIMED / EXPIRED (Clear draft when card is taken/expired)
             # -------------------------------------------------------------
-            if any(kw in text_lower for kw in ["in your crew", "crew now", "walked off", "too late"]):
+            if any(kw in text_lower for kw in [
+                "is now in your crew", "crew now", "joined your crew", "walked off", "too late",
+                "в вашей команде", "вступил в команду", "ушел", "ушла", "слишком поздно"
+            ]):
                 active_recruits_per_chat.pop(chat_id, None)
                 try:
                     await save_telegram_draft(c, chat_id, "")
@@ -610,15 +642,21 @@ def register_word_seek_handler(client: Client):
                 return
 
             # -------------------------------------------------------------
-            # CASE 2: CARD DROP PHOTO (Matches all tiers: Common, Rare, Epic, Legendary, Heroic, Mythic, Celestial, Eternal, Primordial, etc.)
+            # CASE 2: CARD DROP PHOTO (Traces English & Russian signature lines: "Use /recruit to bring them into your crew" / "Пиши /recruit [имя], чтобы взять его в свою команду")
             # -------------------------------------------------------------
             is_card_drop_msg = bool(message.photo) and (
-                "appeared" in text_lower
-                or "recruit" in text_lower
-                or "crew" in text_lower
+                "bring them into your crew" in text_lower
+                or "в свою команду" in text_lower
+                or "чтобы взять его в свою команду" in text_lower
+                or "пиши /recruit" in text_lower
+                or "recruit has appeared" in text_lower
+                or "appeared" in text_lower
+                or "появился" in text_lower
+                or "появилась" in text_lower
+                or ("recruit" in text_lower and "crew" in text_lower)
             )
 
-            if is_card_drop_msg or ("name:" in text_lower or "character:" in text_lower):
+            if is_card_drop_msg or ("name:" in text_lower or "character:" in text_lower or "имя:" in text_lower or "персонаж:" in text_lower):
                 active_recruits_per_chat[chat_id] = now
                 active_high_drops[chat_id] = {
                     "msg_id": message.id,
@@ -627,7 +665,11 @@ def register_word_seek_handler(client: Client):
                     "drafted": False
                 }
 
-                HIGH_TIERS = ["epic", "legendary", "heroic", "mythic", "mythical", "celestial", "eternal", "primordial", "🟣", "💎", "🔥"]
+                HIGH_TIERS = [
+                    "epic", "legendary", "heroic", "mythic", "mythical", "celestial",
+                    "eternal", "primordial", "mafia", "limited-time",
+                    "🟣", "💎", "👑", "🔮", "🌪️", "💠", "🌌", "🤵", "🔥"
+                ]
                 is_high_tier = any(ht in text_lower for ht in HIGH_TIERS)
 
                 # If High-Tier (Epic or higher), Turn OFF Auto-Play to prevent distracting word guesses
@@ -649,8 +691,17 @@ def register_word_seek_handler(client: Client):
                             except Exception:
                                 pass
 
-                # Direct regex extraction (from message text, caption, or inline buttons)
-                raw_c_name = extract_character_name(message)
+                # 1. Resolve character name via photo hash (file_unique_id) instantly from lookism_cards_db.json
+                raw_c_name = ""
+                file_unique_id = getattr(message.photo, "file_unique_id", None) if message.photo else None
+                if file_unique_id and file_unique_id in lookism_unique_id_map:
+                    raw_c_name = lookism_unique_id_map[file_unique_id]
+                    logger.info(f"🎯 [PHOTO HASH DB MATCH!] Resolved '{raw_c_name}' from photo hash '{file_unique_id}'")
+
+                # 2. Fallback to text / inline button extraction if photo hash not matched
+                if not raw_c_name:
+                    raw_c_name = extract_character_name(message)
+
                 if raw_c_name:
                     clean_name = clean_card_name(raw_c_name)
                     if clean_name:
@@ -659,6 +710,11 @@ def register_word_seek_handler(client: Client):
                         await save_telegram_draft(c, chat_id, draft_text)
                         active_high_drops[chat_id]["drafted"] = True
                         logger.info(f"📝 [NATURAL SPAWN DRAFT SET!] Saved '{draft_text}' in group '{chat_title}'")
+                else:
+                    # Fallback generic draft if photo hash not in DB yet
+                    draft_text = "/recruit "
+                    await save_telegram_draft(c, chat_id, draft_text)
+                    logger.warning(f"⚠️ Photo hash '{file_unique_id}' not in DB yet. Saved generic draft '/recruit ' in '{chat_title}'")
                 return
 
             # -------------------------------------------------------------
